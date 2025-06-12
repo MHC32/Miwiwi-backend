@@ -1,6 +1,10 @@
 const userModel = require('../models/user.models');
 const companyModel = require('../models/company.models.js');
 const {generateCompanyRef} = require('../utils/companyUtils');
+const Store = require('../models/stores.models');
+const Company = require('../models/company.models');
+const User = require('../models/user.models');
+const mongoose = require('mongoose');
 
 
 module.exports.createUser = async (req, res) => {
@@ -282,7 +286,6 @@ module.exports.updateCompanyForOwner = async (req, res) => {
       return res.status(403).json({ message: 'Permission denied' });
     }
 
-    // 2. Filtrage
     const allowedUpdates = ['name', 'ref_code'];
     const allowedSettings = ['currency', 'tax_rate'];
     const filteredUpdates = { updatedBy: currentUser._id };
@@ -301,7 +304,6 @@ module.exports.updateCompanyForOwner = async (req, res) => {
       });
     }
 
-    // 3. Mise à jour
     const updatedCompany = await companyModel.findByIdAndUpdate(
       id,
       { $set: filteredUpdates },
@@ -459,11 +461,10 @@ module.exports.listAllCompany = async (req, res) => {
       .limit(limit)
       .lean();
 
-    // 4. Calcul du total
     const total = await companyModel.countDocuments(filter);
     const totalPages = Math.ceil(total / limit);
 
-    // 5. Réponse formatée
+
     res.status(200).json({
       success: true,
       data: companies,
@@ -484,4 +485,280 @@ module.exports.listAllCompany = async (req, res) => {
         : 'Erreur serveur'
     });
   }
+};
+
+
+
+module.exports.createStoreByAdmin = async (req, res) => {
+        const session = await mongoose.startSession();
+        session.startTransaction();
+        
+        try {
+            if (req.user.role !== 'admin') {
+                await session.abortTransaction();
+                return res.status(403).json({
+                    success: false,
+                    message: 'Action réservée aux administrateurs'
+                });
+            }
+
+            const { name, contact, companyId, supervisorId } = req.body;
+
+            if (!name || !contact?.phone || !contact?.address?.city || !companyId) {
+                await session.abortTransaction();
+                return res.status(400).json({
+                    success: false,
+                    message: 'Nom, téléphone, ville et entreprise sont obligatoires'
+                });
+            }
+
+            const company = await Company.findById(companyId).session(session);
+            if (!company) {
+                await session.abortTransaction();
+                return res.status(404).json({
+                    success: false,
+                    message: 'Entreprise non trouvée'
+                });
+            }
+
+            if (supervisorId) {
+                const supervisor = await User.findById(supervisorId).session(session);
+                if (!supervisor || supervisor.role !== 'supervisor') {
+                    await session.abortTransaction();
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Le superviseur doit avoir le rôle approprié'
+                    });
+                }
+            }
+
+            const newStore = await Store.create([{
+                name,
+                contact: {
+                    phone: contact.phone,
+                    address: {
+                        city: contact.address.city,
+                        country: contact.address.country || 'Haïti'
+                    }
+                },
+                company_id: companyId,
+                supervisor_id: supervisorId,
+                created_by: req.user._id,
+                is_active: true
+            }], { session });
+
+            if (supervisorId) {
+                await User.findByIdAndUpdate(
+                    supervisorId,
+                    { $set: { supervisedStore: newStore[0]._id } },
+                    { session }
+                );
+            }
+
+            await session.commitTransaction();
+
+            res.status(201).json({
+                success: true,
+                data: {
+                    id: newStore[0]._id,
+                    name: newStore[0].name,
+                    company: company.name,
+                    supervisor: supervisorId || null
+                }
+            });
+
+        } catch (error) {
+            await session.abortTransaction();
+            res.status(500).json({
+                success: false,
+                error: process.env.NODE_ENV === 'development' 
+                    ? error.message 
+                    : 'Erreur serveur'
+            });
+        } finally {
+            session.endSession();
+        }
+    
+}
+
+
+module.exports.listAllStores = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const { is_active, company_id } = req.query;
+
+    const filter = {};
+
+    if (is_active !== undefined) {
+      filter.is_active = is_active === 'true';
+    }
+
+    if (company_id) {
+      filter.company_id = company_id
+    }
+
+    const stores = await Store.find(filter)
+      .select('-__v ')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const total = await Store.countDocuments(filter);
+    const totalPages = Math.ceil(total / limit);
+
+    res.status(200).json({
+      success: true,
+      data: stores,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNextPage: page < totalPages
+      }
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur serveur'
+    });
+  }
+}
+
+
+
+
+module.exports.updateStoreForOwner = async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body; 
+    const currentUser = res.locals.user; 
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        if (currentUser.role !== 'admin') {
+            await session.abortTransaction();
+            return res.status(403).json({
+                success: false,
+                message: 'Action réservée aux administrateurs'
+            });
+        }
+
+        const store = await Store.findById(id).session(session);
+        if (!store) {
+            await session.abortTransaction();
+            return res.status(404).json({
+                success: false,
+                message: 'Magasin non trouvé'
+            });
+        }
+
+        const allowedUpdates = {
+            name: { type: 'string', maxLength: 50 },
+            'contact.phone': { type: 'string', pattern: /^[0-9]{8,15}$/ },
+            'contact.address.city': { type: 'string' },
+            'contact.address.country': { type: 'string', enum: ['Haïti'] },
+            supervisor_id: { 
+                type: 'ObjectId', 
+                ref: 'User',
+                validate: async (v) => {
+                    if (!v) return true;
+                    const user = await User.findById(v).session(session);
+                    return user?.role === 'supervisor';
+                }
+            },
+            is_active: { type: 'boolean' }
+        };
+
+        const filteredUpdates = {};
+        const errors = [];
+
+        Object.keys(updates).forEach(key => {
+            if (allowedUpdates[key]) {
+                if (typeof updates[key] !== allowedUpdates[key].type) {
+                    errors.push(`Le champ ${key} doit être de type ${allowedUpdates[key].type}`);
+                    return;
+                }
+
+                if (key === 'contact.phone' && !allowedUpdates[key].pattern.test(updates[key])) {
+                    errors.push('Numéro de téléphone invalide');
+                    return;
+                }
+
+                filteredUpdates[key] = updates[key];
+            }
+        });
+
+        if (errors.length > 0) {
+            await session.abortTransaction();
+            return res.status(400).json({
+                success: false,
+                errors
+            });
+        }
+        let oldSupervisorId = null;
+        if ('supervisor_id' in filteredUpdates) {
+            oldSupervisorId = store.supervisor_id;
+
+            if (filteredUpdates.supervisor_id !== oldSupervisorId?.toString()) {
+                // Retirer l'ancien superviseur
+                if (oldSupervisorId) {
+                    await User.findByIdAndUpdate(
+                        oldSupervisorId,
+                        { $unset: { supervisedStore: "" } },
+                        { session }
+                    );
+                }
+
+                if (filteredUpdates.supervisor_id) {
+                    await User.findByIdAndUpdate(
+                        filteredUpdates.supervisor_id,
+                        { $set: { supervisedStore: id } },
+                        { session }
+                    );
+                }
+            }
+        }
+
+
+        const updatedStore = await Store.findByIdAndUpdate(
+            id,
+            { $set: filteredUpdates },
+            { 
+                new: true,
+                runValidators: true,
+                session
+            }
+        ).populate('company_id', 'name');
+
+        await session.commitTransaction();
+
+        res.status(200).json({
+            success: true,
+            data: {
+                id: updatedStore._id,
+                name: updatedStore.name,
+                company: updatedStore.company_id.name,
+                contact: updatedStore.contact,
+                is_active: updatedStore.is_active,
+                supervisor_id: updatedStore.supervisor_id
+            }
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        res.status(500).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : 'Erreur serveur'
+        });
+    } finally {
+        session.endSession();
+    }
 };

@@ -10,6 +10,7 @@ const { checkUser, requireAuth } = require('./middleware/auth.middleware');
 const userRoutes = require('./routes/user.routes');
 const adminRoutes = require('./routes/admin.routes')
 const companyRoutes = require('./routes/company.routes.js');
+const storeRoutes = require('./routes/store.routes')
 
 // 2. INITIALISATION =============================================
 const app = express();
@@ -40,6 +41,7 @@ app.use((req, res, next) => {
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/company', companyRoutes);
+app.use('/api/store/', storeRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
   res.json({ 

@@ -1,15 +1,15 @@
 const mongoose = require('mongoose');
 
-console.log("Tentative de connexion à MongoDB..."); // <-- Ajoutez cette ligne
+console.log("Tentative de connexion à MongoDB Replica Set...");
 
 (async () => {
   try {
-    await mongoose.connect("mongodb://127.0.0.1:27017/Miwiwi", {
+    await mongoose.connect("mongodb://127.0.0.1:27020/Miwiwi?replicaSet=rs0", {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    console.log("✅ Connecté à MongoDB !"); // <-- Ce message devrait s'afficher
+    console.log("✅ Connecté à MongoDB Replica Set !");
   } catch (error) {
-    console.error("❌ Échec de la connexion MongoDB :", error.message); // <-- Capturez les erreurs
+    console.error("❌ Échec de la connexion MongoDB :", error.message);
   }
 })();

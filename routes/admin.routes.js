@@ -1,8 +1,9 @@
 const router = require('express').Router();
 const {requireAuth, isAdmin} = require('../middleware/auth.middleware');
 const adminController = require('../controllers/admin.controller');
-const {validateAdminCompanyCreation, companyExists} = require('../middleware/company.middleware')
-const {createCompanyForOwner} = require('../controllers/admin.controller')
+const {validateAdminCompanyCreation, companyExists} = require('../middleware/company.middleware');
+const {createCompanyForOwner} = require('../controllers/admin.controller');
+
 
 // User
 router.post('/user', requireAuth, isAdmin, adminController.createUser);
@@ -19,5 +20,10 @@ router.patch('/companies/:id', requireAuth, isAdmin, companyExists, adminControl
 router.delete('/companies/:id', requireAuth, isAdmin, companyExists, adminController.deleteCompanyForOwner);
 router.patch('/companies/:id/reactivate', requireAuth, isAdmin, companyExists, adminController.reactivateCompanyForOwner);
 
+
+//Stores
+router.get('/stores', requireAuth, isAdmin, adminController.listAllStores)
+router.post('/stores',requireAuth,isAdmin, adminController.createStoreByAdmin);
+router.patch('/stores/:id', requireAuth, isAdmin, adminController.updateStoreForOwner);
 
 module.exports = router;
