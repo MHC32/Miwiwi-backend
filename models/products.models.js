@@ -1,3 +1,6 @@
+const mongoose = require('mongoose');
+
+
 // models/Product.js
 const productSchema = new mongoose.Schema({
   company: {

@@ -1,3 +1,5 @@
+const mongoose = require('mongoose');
+
 // models/Category.js
 const categorySchema = new mongoose.Schema({
   company_id: {

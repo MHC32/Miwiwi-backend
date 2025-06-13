@@ -4,8 +4,10 @@ const {generateCompanyRef} = require('../utils/companyUtils');
 const Store = require('../models/stores.models');
 const Company = require('../models/company.models');
 const User = require('../models/user.models');
+const Product = require('../models/products.models.js');
+const Category = require('../models/category.models.js');
 const mongoose = require('mongoose');
-
+const bcrypt = require('bcrypt');
 
 module.exports.createUser = async (req, res) => {
     console.log(req.body);
@@ -761,4 +763,826 @@ module.exports.updateStoreForOwner = async (req, res) => {
     } finally {
         session.endSession();
     }
+};
+
+
+module.exports.deleteStoreForOwner = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction()
+
+    if (currentUser.role !== 'admin') {
+      await session.abortTransaction()
+      return res.status(403).json({
+        success: false,
+        message: 'Action réservée aux administrateurs'
+      });
+    }
+
+    const store = await Store.findById(id)
+      .populate('company_id', 'name')
+      .populate('supervisor_id', '_id')
+      .populate('employees', '_id')
+      .session(session);
+
+    if (!store) {
+      session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Magasin non trouvé'
+      });
+    }
+
+    await Store.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          deletedAt: new Date(),
+          deletedBy: currentUser._id,
+          isActive: false,
+        }
+      }
+    );
+
+    if (store.employees.length > 0) {
+      await User.updateMany(
+        { _id: { $in: store.employees.map(e => e._id) } },
+        { $pull: { stores: id } },
+        { session }
+      );
+    }
+
+
+    if (store.employees.length > 0) {
+      await User.updateMany(
+        { _id: { $in: store.employees.map(e => e._id) } },
+        { $pull: { stores: id } },
+        { session }
+      );
+    }
+
+
+    await Product.updateMany(
+      { store_id: id },
+      {
+        $set: {
+          is_active: false,
+          archivedAt: new Date(),
+          archivedBy: currentUser._id
+        }
+      },
+      { session }
+    );
+
+    await Category.updateMany(
+      { stores: id },
+      { $pull: { stores: id } },
+      { session }
+    );
+
+    await session.commitTransaction();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: store._id,
+        name: store.name,
+        deleted_at: new Date(),
+        affected_employees: store.employees.length,
+        affected_products: await Product.countDocuments({ store_id: id })
+      }
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la suppression du magasin'
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+
+module.exports.reactivateStoreForOwner = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+  const session = await mongoose.startSession();
+
+
+  try {
+    session.startTransaction();
+
+    if (currentUser.role !== 'admin') {
+      res.status(403).message({
+        success: false,
+        message: 'Action réservée aux administrateurs'
+      });
+    }
+
+    const store = await Store.findByOne({
+      _id: id,
+      deletedAt: { $exists: true }
+    })
+
+    if (!store) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Magasin non trouvé ou déjà actif'
+      });
+    }
+
+    const reactivatedStore = await Store.findByIdAndUpdate(
+      id,
+      {
+        $unset: { deletedAt: "", deletedBy: "" },
+        $set: { isActive: true }
+      },
+
+      {
+        new: true,
+        sessions,
+        runValidators: true
+      }
+    ).populate('company_id', 'name');
+
+    await Product.updateMany(
+      { store_id: id, is_active: false },
+      {
+        $set: { is_active: true },
+        $unset: { archivedAt: "", archivedBy: "" }
+      },
+      { session }
+    );
+    await session.commitTransaction();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: reactivatedStore._id,
+        name: reactivatedStore.name,
+        company: reactivatedStore.company_id.name,
+        is_active: reactivatedStore.is_active,
+        reactivated_at: new Date(),
+        reactivated_by: currentUser._id
+      }
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la réactivation du magasin'
+    });
+  } finally {
+    session.endSession();
+  }
+}
+
+module.exports.createEmployeeForStore = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { phone, last_name, first_name, role, email, password, storeIds, pin_code } = req.body;
+    const currentUser = res.locals.user;
+
+    if (currentUser.role !== 'admin') {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: 'Action réservée aux administrateurs'
+      });
+    }
+
+    const requiredFields = ['phone', 'first_name', 'last_name', 'password', 'role'];
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+
+    if (missingFields.length > 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Champs manquants: ${missingFields.join(', ')}`
+      });
+    }
+
+    const allowedRoles = ['cashier', 'supervisor'];
+    if (!allowedRoles.includes(role)) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Rôle invalide. Doit être "cashier" ou "supervisor"'
+      });
+    }
+
+    if (role === "supervisor" && storeIds?.length > 1) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Un superviseur ne peut être affecté qu\'à un seul magasin'
+      });
+    }
+
+    if (storeIds?.length > 0) {
+      const existingStoresCount = await Store.countDocuments({
+        _id: { $in: storeIds },
+        is_active: true,
+        deletedAt: { $exists: false }
+      }).session(session);
+
+      if (existingStoresCount !== storeIds.length) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: 'Un ou plusieurs magasins sont invalides ou inactifs'
+        });
+      }
+    }
+
+    const existingUser = await User.findOne({ phone }).session(session);
+    if (existingUser) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Ce numéro de téléphone est déjà utilisé'
+      });
+    }
+
+    const salt = await bcrypt.genSalt();
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const newEmployee = await User.create([{
+      phone,
+      first_name,
+      last_name,
+      email,
+      password: hashedPassword,
+      role,
+      pin_code,
+      stores: storeIds || [],
+      createdBy: currentUser._id,
+      is_active: true
+    }], { session });
+
+    if (storeIds?.length > 0) {
+      await Store.updateMany(
+        { _id: { $in: storeIds } },
+        { $addToSet: { employees: newEmployee[0]._id } },
+        { session }
+      );
+    }
+
+    if (role === 'supervisor' && storeIds?.length === 1) {
+      await Store.findByIdAndUpdate(
+        storeIds[0],
+        { supervisor_id: newEmployee[0]._id },
+        { session }
+      );
+    }
+
+    await session.commitTransaction();
+
+    const employeeData = newEmployee[0].toObject();
+    delete employeeData.password;
+    delete employeeData.__v;
+
+    return res.status(201).json({
+      success: true,
+      data: employeeData
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la création de l\'employé'
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+
+/**
+ * @description Met à jour les informations d'un employé
+ * @route PATCH /admin/employees/:id
+ * @access Private (Admin seulement)
+ */
+module.exports.updateEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+    const currentUser = res.locals.user;
+
+    // Vérification des champs obligatoires
+    if (!id) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ID employé manquant' 
+      });
+    }
+
+    // Vérification que l'utilisateur existe
+    const employee = await User.findById(id).session(session);
+    if (!employee) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Employé non trouvé' 
+      });
+    }
+
+    // Validation des rôles
+    const allowedRoles = ['cashier', 'supervisor'];
+    if (updates.role && !allowedRoles.includes(updates.role)) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Rôle invalide. Doit être "cashier" ou "supervisor"' 
+      });
+    }
+
+    // Validation spécifique pour les superviseurs
+    if (updates.role === 'supervisor' && updates.storeIds?.length > 1) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Un superviseur ne peut être affecté qu\'à un seul magasin' 
+      });
+    }
+
+    // Vérification des magasins
+    if (updates.storeIds?.length > 0) {
+      const existingStoresCount = await Store.countDocuments({
+        _id: { $in: updates.storeIds },
+        is_active: true,
+        deletedAt: { $exists: false }
+      }).session(session);
+
+      if (existingStoresCount !== updates.storeIds.length) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Un ou plusieurs magasins sont invalides ou inactifs' 
+        });
+      }
+    }
+
+    // Mise à jour de l'employé
+    const updatedEmployee = await User.findByIdAndUpdate(
+      id,
+      { 
+        ...updates,
+        updatedBy: currentUser._id 
+      },
+      { 
+        new: true, 
+        session,
+        runValidators: true 
+      }
+    ).select('-password -__v');
+
+    // Gestion des magasins si storeIds est fourni
+    if (updates.storeIds) {
+      // 1. Retirer l'employé des anciens magasins
+      await Store.updateMany(
+        { employees: id },
+        { $pull: { employees: id } },
+        { session }
+      );
+
+      // 2. Ajouter aux nouveaux magasins
+      await Store.updateMany(
+        { _id: { $in: updates.storeIds } },
+        { $addToSet: { employees: id } },
+        { session }
+      );
+
+      // 3. Gestion spécifique des superviseurs
+      if (updates.role === 'supervisor' && updates.storeIds.length === 1) {
+        await Store.findByIdAndUpdate(
+          updates.storeIds[0],
+          { supervisor_id: id },
+          { session }
+        );
+      }
+    }
+
+    await session.commitTransaction();
+
+    return res.status(200).json({ 
+      success: true, 
+      data: updatedEmployee 
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Erreur mise à jour employé:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la mise à jour de l\'employé' 
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+
+
+
+module.exports.addEmployeeToStores = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const { storeIds } = req.body;
+
+
+    if (!storeIds?.length) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Liste de magasins requise' 
+      });
+    }
+
+
+    const employee = await User.findById(id).session(session);
+    if (!employee) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Employé non trouvé' 
+      });
+    }
+
+
+    const existingStores = await Store.countDocuments({
+      _id: { $in: storeIds },
+      is_active: true
+    }).session(session);
+
+    if (existingStores !== storeIds.length) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Un ou plusieurs magasins invalides' 
+      });
+    }
+
+
+    await Store.updateMany(
+      { _id: { $in: storeIds } },
+      { $addToSet: { employees: id } },
+      { session }
+    );
+
+  
+    await User.findByIdAndUpdate(
+      id,
+      { $addToSet: { stores: { $each: storeIds } } },
+      { session, new: true }
+    );
+
+    await session.commitTransaction();
+    
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Employé ajouté aux magasins avec succès' 
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+
+
+module.exports.removeEmployeeFromStores = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const { storeIds } = req.body;
+
+    if (!storeIds?.length) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Liste de magasins requise' 
+      });
+    }
+
+    await Store.updateMany(
+      { _id: { $in: storeIds } },
+      { $pull: { employees: id } },
+      { session }
+    );
+
+    await User.findByIdAndUpdate(
+      id,
+      { $pull: { stores: { $in: storeIds } } },
+      { session }
+    );
+
+
+    await Store.updateMany(
+      { _id: { $in: storeIds }, supervisor_id: id },
+      { $unset: { supervisor_id: "" } },
+      { session }
+    );
+
+    await session.commitTransaction();
+    
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Employé retiré des magasins avec succès' 
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+
+
+module.exports.listAllEmployees = async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 10, 
+      role, 
+      storeId, 
+      search,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      is_active 
+    } = req.query;
+
+    let query = { 
+      role: { $in: ['cashier', 'supervisor'] } 
+    };
+
+    if (role) {
+      query.role = role;
+    }
+
+    if (is_active !== undefined) {
+      query.is_active = is_active === 'true';
+    }
+
+    if (storeId) {
+      query.stores = storeId;
+    }
+
+    if (search) {
+      query.$or = [
+        { first_name: { $regex: search, $options: 'i' } },
+        { last_name: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const sortOptions = {};
+    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    const employees = await User.find(query)
+      .select('-password -__v')
+      .populate({
+        path: 'stores',
+        select: 'name contact.address.city',
+        match: { is_active: true }
+      })
+      .populate({
+        path: 'supervisedStore',
+        select: 'name contact.address.city'
+      })
+      .sort(sortOptions)
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+
+    const total = await User.countDocuments(query);
+
+    const response = {
+      success: true,
+      data: employees,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    };
+
+    res.status(200).json(response);
+
+  } catch (error) {
+    console.error('Error listing employees:', error);
+    res.status(500).json({ 
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la récupération des employés' 
+    });
+  }
+};
+
+
+module.exports.deactivateEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const currentUser = res.locals.user;
+
+    const employee = await User.findById(id).session(session);
+    if (!employee) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Employé non trouvé' 
+      });
+    }
+
+    if (employee.role === 'admin' && currentUser.role !== 'admin') {
+      await session.abortTransaction();
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Action non autorisée' 
+      });
+    }
+
+    await User.findByIdAndUpdate(
+      id,
+      { 
+        is_active: false,
+        deactivatedAt: new Date(),
+        deactivatedBy: currentUser._id
+      },
+      { session }
+    );
+
+    await Store.updateMany(
+      { employees: id },
+      { 
+        $pull: { employees: id },
+        $unset: { supervisor_id: 1 } // Si c'était un superviseur
+      },
+      { session }
+    );
+
+    await session.commitTransaction();
+
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Employé désactivé avec succès' 
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Erreur désactivation employé:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la désactivation' 
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+
+module.exports.reactivateEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const currentUser = res.locals.user;
+
+    const employee = await User.findOne({
+      _id: id,
+      is_active: false
+    }).session(session);
+
+    if (!employee) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Employé non trouvé ou déjà actif'
+      });
+    }
+
+    const reactivatedEmployee = await User.findByIdAndUpdate(
+      id,
+      {
+        is_active: true,
+        $unset: {
+          deactivatedAt: "",
+          deactivatedBy: ""
+        },
+        reactivatedBy: currentUser._id,
+        reactivatedAt: new Date()
+      },
+      { 
+        new: true,
+        session 
+      }
+    ).select('-password -__v');
+
+    if (employee.stores?.length > 0) {
+      // Réaffectation aux magasins
+      await Store.updateMany(
+        { _id: { $in: employee.stores } },
+        { $addToSet: { employees: id } },
+        { session }
+      );
+
+      if (employee.role === 'supervisor') {
+        await Store.findByIdAndUpdate(
+          employee.supervisedStore,
+          { supervisor_id: id },
+          { session }
+        );
+      }
+    }
+
+    await session.commitTransaction();
+
+    return res.status(200).json({
+      success: true,
+      data: reactivatedEmployee,
+      message: 'Employé réactivé avec succès'
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Erreur réactivation employé:', error);
+    return res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la réactivation'
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+
+
+module.exports.getEmployeeStores = async (req, res) => {
+  try {
+    const employee = await User.findById(req.params.id)
+      .populate('stores', 'name contact.address.city');
+    
+    if (!employee) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Employé non trouvé' 
+      });
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      data: employee.stores 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
 };
