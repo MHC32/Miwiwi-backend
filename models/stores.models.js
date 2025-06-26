@@ -6,6 +6,17 @@ const storeSchema = new mongoose.Schema({
     ref: 'Company',
     required: true
   },
+  photo: {
+    type: String, // On stocke le chemin ou l'URL de l'image
+    default: null,
+    validate: {
+      validator: v => {
+        if (!v) return true;
+        return /\.(jpe?g|png|gif|webp)$/i.test(v);
+      },
+      message: 'Le format de la photo doit être JPEG, PNG, GIF ou WebP'
+    }
+  },
   name: {
     type: String,
     required: true,

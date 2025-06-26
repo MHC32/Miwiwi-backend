@@ -1,5 +1,6 @@
 // models/User.js
 const mongoose = require('mongoose');
+const mongoosePaginate = require('mongoose-paginate-v2');
 const { isEmail } = require('validator');
 const bcrypt = require('bcrypt');
 
@@ -101,4 +102,5 @@ userSchema.statics.login = async function (phone, password) {
   return user;
 };
 
+userSchema.plugin(mongoosePaginate)
 module.exports = mongoose.model('User', userSchema);

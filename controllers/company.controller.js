@@ -98,3 +98,45 @@ module.exports.updateCompany = async (req, res) => {
     });
   }
 };
+
+
+module.exports.listOwnerCompanies = async (req, res) => {
+  try {
+    const ownerId = req.user._id;
+    const { page = 1, limit = 10, status } = req.query;
+    
+    const query = { owner_id: ownerId };
+    
+    // Filtre par statut si fourni
+    if (status) {
+      query.is_active = status === 'active';
+    }
+    
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort: { createdAt: -1 },
+      select: '-__v -created_by -updatedBy'
+    };
+    
+    const companies = await companyModel.paginate(query, options);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        companies: companies.docs,
+        total: companies.totalDocs,
+        pages: companies.totalPages,
+        currentPage: companies.page
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur serveur'
+    });
+  }
+};

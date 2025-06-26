@@ -386,3 +386,237 @@ module.exports.deleteStore = async (req, res) => {
     session.endSession();
   }
 };
+
+module.exports.deactivateStore = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+
+  try {
+    // Trouver le store avec les informations de l'entreprise et du superviseur
+    const store = await Store.findById(id)
+      .populate('company_id', 'owner_id')
+      .populate('supervisor_id', '_id');
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: 'Store non trouvé'
+      });
+    }
+
+    // Vérifier les permissions
+    if (currentUser.role === 'owner') {
+      // Seul le propriétaire de l'entreprise peut désactiver
+      if (store.company_id.owner_id.toString() !== currentUser._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Vous ne possédez pas ce store'
+        });
+      }
+    } else if (currentUser.role === 'supervisor') {
+      // Le superviseur ne peut désactiver que son propre store
+      if (!store.supervisor_id || store.supervisor_id._id.toString() !== currentUser._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Vous n\'êtes pas le superviseur de ce store'
+        });
+      }
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: 'Action non autorisée pour votre rôle'
+      });
+    }
+
+    // Désactiver le store
+    const updatedStore = await Store.findByIdAndUpdate(
+      id,
+      { $set: { is_active: false } },
+      { new: true, runValidators: true }
+    )
+    .populate('supervisor_id', 'first_name last_name phone')
+    .select('-__v -created_at -updated_at');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: updatedStore._id,
+        name: updatedStore.name,
+        contact: updatedStore.contact,
+        is_active: updatedStore.is_active,
+        supervisor: updatedStore.supervisor_id ? {
+          name: `${updatedStore.supervisor_id.first_name} ${updatedStore.supervisor_id.last_name}`,
+          phone: updatedStore.supervisor_id.phone
+        } : null,
+        employees_count: updatedStore.employees?.length || 0
+      },
+      message: 'Store désactivé avec succès'
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la désactivation du store'
+    });
+  }
+};
+
+module.exports.activateStore = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+
+  try {
+    // Trouver le store avec les informations de l'entreprise
+    const store = await Store.findById(id)
+      .populate('company_id', 'owner_id');
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: 'Store non trouvé'
+      });
+    }
+
+    // Seul le propriétaire peut réactiver un store
+    if (currentUser.role !== 'owner') {
+      return res.status(403).json({
+        success: false,
+        message: 'Action réservée aux propriétaires'
+      });
+    }
+
+    // Vérifier que le propriétaire possède bien ce store
+    if (store.company_id.owner_id.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Vous ne possédez pas ce store'
+      });
+    }
+
+    // Réactiver le store
+    const updatedStore = await Store.findByIdAndUpdate(
+      id,
+      { $set: { is_active: true } },
+      { new: true, runValidators: true }
+    )
+    .populate('supervisor_id', 'first_name last_name phone')
+    .select('-__v -created_at -updated_at');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: updatedStore._id,
+        name: updatedStore.name,
+        contact: updatedStore.contact,
+        is_active: updatedStore.is_active,
+        supervisor: updatedStore.supervisor_id ? {
+          name: `${updatedStore.supervisor_id.first_name} ${updatedStore.supervisor_id.last_name}`,
+          phone: updatedStore.supervisor_id.phone
+        } : null,
+        employees_count: updatedStore.employees?.length || 0
+      },
+      message: 'Store réactivé avec succès'
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la réactivation du store'
+    });
+  }
+};
+
+
+module.exports.getStoreDetails = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+
+  try {
+    // Trouver le store avec les informations complètes
+    const store = await Store.findById(id)
+      .populate('company_id', 'owner_id name')
+      .populate('supervisor_id', 'first_name last_name phone role')
+      .populate('employees', 'first_name last_name phone role')
+      .select('-__v -created_at -updated_at');
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: 'Store non trouvé'
+      });
+    }
+
+    // Vérifier les permissions
+    if (currentUser.role === 'owner') {
+      // Le propriétaire ne peut voir que les stores de son entreprise
+      if (store.company_id.owner_id.toString() !== currentUser._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé à ce store'
+        });
+      }
+    } else if (currentUser.role === 'supervisor') {
+      // Le superviseur ne peut voir que son propre store
+      if (!store.supervisor_id || store.supervisor_id._id.toString() !== currentUser._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé à ce store'
+        });
+      }
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: 'Rôle non autorisé'
+      });
+    }
+
+    // Formater la réponse
+    const response = {
+      id: store._id,
+      name: store.name,
+      company: {
+        id: store.company_id._id,
+        name: store.company_id.name
+      },
+      contact: {
+        phone: store.contact.phone,
+        address: {
+          city: store.contact.address.city,
+          country: store.contact.address.country
+        }
+      },
+      supervisor: store.supervisor_id ? {
+        id: store.supervisor_id._id,
+        name: `${store.supervisor_id.first_name} ${store.supervisor_id.last_name}`,
+        phone: store.supervisor_id.phone,
+        role: store.supervisor_id.role
+      } : null,
+      employees: store.employees.map(emp => ({
+        id: emp._id,
+        name: `${emp.first_name} ${emp.last_name}`,
+        phone: emp.phone,
+        role: emp.role
+      })),
+      is_active: store.is_active,
+      created_by: store.created_by,
+      deletedAt: store.deletedAt
+    };
+
+    res.status(200).json({
+      success: true,
+      data: response
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la récupération des détails du store'
+    });
+  }
+};

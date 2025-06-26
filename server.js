@@ -11,16 +11,17 @@ const userRoutes = require('./routes/user.routes');
 const adminRoutes = require('./routes/admin.routes')
 const companyRoutes = require('./routes/company.routes.js');
 const storeRoutes = require('./routes/store.routes')
-
+const employeeRoutes = require('./routes/employee.routes')
 // 2. INITIALISATION =============================================
 const app = express();
 
 // 3. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
-// app.use(cors({
-//   origin: process.env.CLIENT_URL || 'http://localhost:3000',
-//   credentials: true
-// }));
+app.use(cors({
+  origin: process.env.CLIENT_URL || 'http://localhost:3039',
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -40,8 +41,9 @@ app.use((req, res, next) => {
 // 6. ROUTES =====================================================
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
-app.use('/api/company', companyRoutes);
-app.use('/api/store/', storeRoutes);
+app.use('/api/owner', companyRoutes);
+app.use('/api/owner/', storeRoutes);
+app.use('/api/owner/', employeeRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
   res.json({ 
@@ -78,6 +80,6 @@ app.listen(PORT, () => {
   console.log(`\n--- Serveur démarré ---`);
   console.log(`Port: ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
-//   console.log(`URL Client: ${process.env.CLIENT_URL || 'http://localhost:3000'}\n`);
+  console.log(`URL Client: ${process.env.CLIENT_URL || 'http://localhost:3000'}\n`);
 });
 

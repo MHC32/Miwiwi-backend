@@ -1,5 +1,6 @@
 const userModel = require('../models/user.models');
 const jwt = require('jsonwebtoken'); 
+const companyModel = require('../models/company.models');
 
 const maxAge = 3 * 24 * 60 * 60 * 1000;
 
@@ -91,3 +92,101 @@ module.exports.logout = (req, res) => {
   }
 };
 
+
+module.exports.loginOwner = async (req, res) => {
+  const { phone, password } = req.body;
+
+  try {
+    const user = await userModel.login(phone, password);
+    
+    if (!['owner', 'supervisor'].includes(user.role)) {
+      return res.status(403).json({ 
+        error: "Accès réservé aux propriétaires et superviseurs",
+        code: "ROLE_NOT_ALLOWED" 
+      });
+    }
+
+    const token = createToken(user._id);
+    
+    res.cookie('jwt', token, { 
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 3 * 24 * 60 * 60 * 1000 // 3 jours
+    });
+
+    res.status(200).json({
+      userId: user._id,
+      role: user.role,
+      firstName: user.first_name 
+    });
+
+  } catch (error) {
+    res.status(401).json({ 
+      error: error.message,
+      code: "LOGIN_FAILED" 
+    });
+  }
+};
+
+
+module.exports.getOwnerData = async (req, res) => {
+  try {
+    const user = res.locals.user;
+    
+    if (!['owner', 'supervisor'].includes(user.role)) {
+      return res.status(403).json({ 
+        error: "Accès non autorisé",
+        code: "FORBIDDEN" 
+      });
+    }
+
+    const ownerData = await userModel.findById(user._id)
+      .select('-password -__v')
+      .populate({
+        path: 'stores',
+        select: 'name contact.address.city is_active',
+        populate: {
+          path: 'employees',
+          select: 'first_name last_name role',
+          match: { is_active: true }
+        }
+      })
+      .populate({
+        path: 'supervisedStore',
+        select: 'name employees'
+      });
+
+    if (!ownerData) {
+      return res.status(404).json({ 
+        error: "Utilisateur non trouvé",
+        code: "USER_NOT_FOUND" 
+      });
+    }
+
+    let companies = [];
+    if (user.role === 'owner') {
+      companies = await companyModel.find({ owner_id: user._id })
+        .select('name ref_code settings is_active ');
+    }
+
+    res.status(200).json({
+      user: {
+        id: ownerData._id,
+        firstName: ownerData.first_name,
+        lastName: ownerData.last_name,
+        phone: ownerData.phone,
+        email: ownerData.email,
+        role: ownerData.role
+      },
+      companies,
+      stores: ownerData.stores || [],
+      supervisedStore: ownerData.supervisedStore || null
+    });
+
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      code: "SERVER_ERROR" 
+    });
+  }
+};
