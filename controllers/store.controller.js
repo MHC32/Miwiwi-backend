@@ -1,6 +1,9 @@
 const Store = require('../models/stores.models');
 const Company = require('../models/company.models');
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
+const { URL } = require('url');
 
 
 module.exports.createStore = async (req, res) => {
@@ -30,7 +33,7 @@ module.exports.createStore = async (req, res) => {
       });
     }
 
-    const newStore = await Store.create({
+    const storeData = {
       name,
       company_id: company._id,
       contact: {
@@ -42,24 +45,43 @@ module.exports.createStore = async (req, res) => {
       },
       supervisor_id,
       created_by: currentUser._id
-    });
+    };
+
+    if (req.file) {
+      storeData.photo = `/uploads/stores/${req.file.filename}`;
+    }
+
+    const newStore = await Store.create(storeData);
 
     res.status(201).json({
       success: true,
       data: {
         id: newStore._id,
         name: newStore.name,
+        photo: newStore.photo,
         company_id: newStore.company_id,
-        contact: newStore.contact
+        contact: newStore.contact,
+        supervisor_id: newStore.supervisor_id,
+        is_active: newStore.is_active
       }
     });
 
   } catch (error) {
+    console.error('Erreur création store:', error);
+    if (req.file) {
+      const fs = require('fs');
+      const path = require('path');
+      const filePath = path.join(__dirname, '../../public', req.file.path);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
     res.status(500).json({
       success: false,
-      error: process.env.NODE_ENV === 'development' 
-        ? error.message 
-        : 'Erreur serveur'
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la création du magasin'
     });
   }
 };
@@ -99,11 +121,22 @@ module.exports.updateStore = async (req, res) => {
       'contact.address.city': { type: 'string' },
       'contact.address.country': { type: 'string', enum: ['Haïti'] },
       supervisor_id: { type: 'ObjectId', ref: 'User' },
-      is_active: { type: 'boolean' }
+      is_active: { type: 'boolean' },
+      photo: { type: 'string' }
     };
 
     const updateObj = {};
     const errors = [];
+
+    if (req.file) {
+      updateObj.photo = `/uploads/stores/${req.file.filename}`;
+      if (store.photo) {
+        const oldPhotoPath = path.join(__dirname, '../../public', store.photo);
+        if (fs.existsSync(oldPhotoPath)) {
+          fs.unlinkSync(oldPhotoPath);
+        }
+      }
+    }
 
     for (const [key, value] of Object.entries(updates)) {
       if (key === 'contact') {
@@ -137,6 +170,13 @@ module.exports.updateStore = async (req, res) => {
     }
 
     if (errors.length > 0) {
+      if (req.file) {
+        const newPhotoPath = path.join(__dirname, '../../public/uploads/stores', req.file.filename);
+        if (fs.existsSync(newPhotoPath)) {
+          fs.unlinkSync(newPhotoPath);
+        }
+      }
+
       return res.status(400).json({
         success: false,
         errors
@@ -151,25 +191,41 @@ module.exports.updateStore = async (req, res) => {
         runValidators: true,
         select: '-__v -created_at -updated_at'
       }
-    );
+    ).populate('supervisor_id', 'first_name last_name phone');
 
     res.status(200).json({
       success: true,
       data: {
         id: updatedStore._id,
         name: updatedStore.name,
+        photo: updatedStore.photo,
         contact: updatedStore.contact,
         is_active: updatedStore.is_active,
-        supervisor_id: updatedStore.supervisor_id
-      }
+        supervisor: updatedStore.supervisor_id ? {
+          id: updatedStore.supervisor_id._id,
+          name: `${updatedStore.supervisor_id.first_name} ${updatedStore.supervisor_id.last_name}`,
+          phone: updatedStore.supervisor_id.phone
+        } : null,
+        employees_count: updatedStore.employees?.length || 0
+      },
+      message: 'Magasin mis à jour avec succès'
     });
 
   } catch (error) {
+    console.error('Erreur lors de la mise à jour du store:', error);
+
+    if (req.file) {
+      const newPhotoPath = path.join(__dirname, '../../public/uploads/stores', req.file.filename);
+      if (fs.existsSync(newPhotoPath)) {
+        fs.unlinkSync(newPhotoPath);
+      }
+    }
+
     res.status(500).json({
       success: false,
       error: process.env.NODE_ENV === 'development'
         ? error.message
-        : 'Erreur serveur'
+        : 'Une erreur est survenue lors de la mise à jour du magasin'
     });
   }
 };
@@ -177,17 +233,16 @@ module.exports.updateStore = async (req, res) => {
 
 module.exports.listOwnerStores = async (req, res) => {
   const currentUser = res.locals.user;
-  const { 
-    page = 1, 
-    limit = 10, 
-    search, 
+  const {
+    page = 1,
+    limit = 10,
+    search,
     is_active,
-    sortBy = 'name', 
-    sortOrder = 'asc' 
+    sortBy = 'name',
+    sortOrder = 'asc'
   } = req.query;
 
   try {
-   
     if (currentUser.role !== 'owner') {
       return res.status(403).json({
         success: false,
@@ -225,7 +280,8 @@ module.exports.listOwnerStores = async (req, res) => {
       .sort(sortOptions)
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit))
-      .select('-__v -created_at -updated_at -company_id');
+      .select('-__v -created_at -updated_at -company_id')
+      .lean(); // Conversion en objet simple pour activer les getters
 
     const total = await Store.countDocuments(query);
 
@@ -234,6 +290,7 @@ module.exports.listOwnerStores = async (req, res) => {
       data: stores.map(store => ({
         id: store._id,
         name: store.name,
+        photo: store.photo ? new URL(store.photo.replace('public/', ''), process.env.BASE_URL).toString(): null,
         contact: {
           phone: store.contact.phone,
           address: {
@@ -265,8 +322,8 @@ module.exports.listOwnerStores = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: process.env.NODE_ENV === 'development' 
-        ? error.message 
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
         : 'Erreur serveur'
     });
   }
@@ -276,7 +333,7 @@ module.exports.deleteStore = async (req, res) => {
   const { id } = req.params;
   const currentUser = res.locals.user;
   const session = await mongoose.startSession();
-  
+
   try {
     session.startTransaction();
 
@@ -378,8 +435,8 @@ module.exports.deleteStore = async (req, res) => {
     await session.abortTransaction();
     res.status(500).json({
       success: false,
-      error: process.env.NODE_ENV === 'development' 
-        ? error.message 
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
         : 'Erreur lors de la suppression du magasin'
     });
   } finally {
@@ -434,8 +491,8 @@ module.exports.deactivateStore = async (req, res) => {
       { $set: { is_active: false } },
       { new: true, runValidators: true }
     )
-    .populate('supervisor_id', 'first_name last_name phone')
-    .select('-__v -created_at -updated_at');
+      .populate('supervisor_id', 'first_name last_name phone')
+      .select('-__v -created_at -updated_at');
 
     res.status(200).json({
       success: true,
@@ -456,8 +513,8 @@ module.exports.deactivateStore = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: process.env.NODE_ENV === 'development' 
-        ? error.message 
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
         : 'Erreur lors de la désactivation du store'
     });
   }
@@ -501,8 +558,8 @@ module.exports.activateStore = async (req, res) => {
       { $set: { is_active: true } },
       { new: true, runValidators: true }
     )
-    .populate('supervisor_id', 'first_name last_name phone')
-    .select('-__v -created_at -updated_at');
+      .populate('supervisor_id', 'first_name last_name phone')
+      .select('-__v -created_at -updated_at');
 
     res.status(200).json({
       success: true,
@@ -523,8 +580,8 @@ module.exports.activateStore = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: process.env.NODE_ENV === 'development' 
-        ? error.message 
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
         : 'Erreur lors de la réactivation du store'
     });
   }
@@ -541,7 +598,8 @@ module.exports.getStoreDetails = async (req, res) => {
       .populate('company_id', 'owner_id name')
       .populate('supervisor_id', 'first_name last_name phone role')
       .populate('employees', 'first_name last_name phone role')
-      .select('-__v -created_at -updated_at');
+      .select('-__v -created_at -updated_at')
+      .lean(); // Convertit en objet JavaScript pour les getters
 
     if (!store) {
       return res.status(404).json({
@@ -552,7 +610,6 @@ module.exports.getStoreDetails = async (req, res) => {
 
     // Vérifier les permissions
     if (currentUser.role === 'owner') {
-      // Le propriétaire ne peut voir que les stores de son entreprise
       if (store.company_id.owner_id.toString() !== currentUser._id.toString()) {
         return res.status(403).json({
           success: false,
@@ -560,7 +617,6 @@ module.exports.getStoreDetails = async (req, res) => {
         });
       }
     } else if (currentUser.role === 'supervisor') {
-      // Le superviseur ne peut voir que son propre store
       if (!store.supervisor_id || store.supervisor_id._id.toString() !== currentUser._id.toString()) {
         return res.status(403).json({
           success: false,
@@ -574,10 +630,11 @@ module.exports.getStoreDetails = async (req, res) => {
       });
     }
 
-    // Formater la réponse
+    // Formater la réponse avec l'URL complète de la photo
     const response = {
       id: store._id,
       name: store.name,
+      photo: store.photo ? `${process.env.BASE_URL}/${store.photo.replace('public/', '')}` : null,
       company: {
         id: store.company_id._id,
         name: store.company_id.name
@@ -614,8 +671,8 @@ module.exports.getStoreDetails = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: process.env.NODE_ENV === 'development' 
-        ? error.message 
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
         : 'Erreur lors de la récupération des détails du store'
     });
   }

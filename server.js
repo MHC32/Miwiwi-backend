@@ -6,6 +6,7 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const morgan = require('morgan');
 const cors = require('cors');
+const path = require('path');
 const { checkUser, requireAuth } = require('./middleware/auth.middleware');
 const userRoutes = require('./routes/user.routes');
 const adminRoutes = require('./routes/admin.routes')
@@ -38,7 +39,16 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.jpg') || path.endsWith('.png') || path.endsWith('.webp')) {
+      res.set('Cache-Control', 'public, max-age=31536000');
+    }
+  }
+}));
+
 // 6. ROUTES =====================================================
+app.set('baseUrl', process.env.BASE_URL || `http://localhost:${process.env.PORT}`);
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/owner', companyRoutes);

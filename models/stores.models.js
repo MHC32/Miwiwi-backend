@@ -7,14 +7,21 @@ const storeSchema = new mongoose.Schema({
     required: true
   },
   photo: {
-    type: String, // On stocke le chemin ou l'URL de l'image
+    type: String,
     default: null,
+    get: (photo) => {
+      if (!photo) return null;
+      // Supprime 'public/' du chemin si présent
+      const cleanPath = photo.replace(/^public\//, '');
+      // Retourne l'URL complète
+      return `${process.env.BASE_URL || app.get('baseUrl')}/${cleanPath}`;
+    },
     validate: {
       validator: v => {
         if (!v) return true;
-        return /\.(jpe?g|png|gif|webp)$/i.test(v);
+        return /\.(jpe?g|png|webp)$/i.test(v);
       },
-      message: 'Le format de la photo doit être JPEG, PNG, GIF ou WebP'
+      message: 'Le format de la photo doit être JPEG, PNG ou WebP'
     }
   },
   name: {
