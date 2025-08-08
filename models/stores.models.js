@@ -9,13 +9,6 @@ const storeSchema = new mongoose.Schema({
   photo: {
     type: String,
     default: null,
-    get: (photo) => {
-      if (!photo) return null;
-      // Supprime 'public/' du chemin si présent
-      const cleanPath = photo.replace(/^public\//, '');
-      // Retourne l'URL complète
-      return `${process.env.BASE_URL || app.get('baseUrl')}/${cleanPath}`;
-    },
     validate: {
       validator: v => {
         if (!v) return true;

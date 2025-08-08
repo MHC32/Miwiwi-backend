@@ -1586,3 +1586,320 @@ module.exports.getEmployeeStores = async (req, res) => {
     });
   }
 };
+
+
+exports.listAllCategories = async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 10,
+      companyId,
+      withStores = false,
+      withStats = false
+    } = req.query;
+
+    const pipeline = [];
+    
+    // Filtrage optionnel par entreprise
+    if (companyId) {
+      pipeline.push({
+        $match: { company_id: new mongoose.Types.ObjectId(companyId) }
+      });
+    }
+
+    // Jointure avec les stores si demandé
+    if (withStores === 'true') {
+      pipeline.push({
+        $lookup: {
+          from: 'stores',
+          localField: 'stores',
+          foreignField: '_id',
+          as: 'stores'
+        }
+      });
+    }
+
+    // Statistiques produits si demandé
+    if (withStats === 'true') {
+      pipeline.push({
+        $lookup: {
+          from: 'products',
+          localField: '_id',
+          foreignField: 'category_id',
+          as: 'products'
+        }
+      });
+      pipeline.push({
+        $addFields: {
+          productsCount: { $size: "$products" },
+          activeProducts: {
+            $size: {
+              $filter: {
+                input: "$products",
+                as: "product",
+                cond: { $eq: ["$$product.is_active", true] }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // Pagination
+    const paginationStage = [
+      { $skip: (parseInt(page) - 1) * parseInt(limit) },
+      { $limit: parseInt(limit) }
+    ];
+
+    const [categories, total] = await Promise.all([
+      Category.aggregate([...pipeline, ...paginationStage]),
+      Category.aggregate([...pipeline, { $count: "total" }])
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: categories,
+      pagination: {
+        total: total[0]?.total || 0,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil((total[0]?.total || 0) / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur serveur'
+    });
+  }
+};
+
+exports.updateCategory = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const { name, color, icon, storeIds, companyId, storesToRemove } = req.body; // Ajout de storesToRemove
+    const updater = res.locals.user;
+
+    // 1. Vérification de la catégorie existante
+    const category = await Category.findById(id).session(session);
+    if (!category) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false,
+        message: 'Catégorie non trouvée' 
+      });
+    }
+
+    // 2. Validation pour les champs
+    const updates = {};
+    if (name) updates.name = name;
+    if (color) updates.color = color;
+    if (icon) updates.icon = icon;
+
+    // 3. Gestion du changement d'entreprise (admin seulement)
+    if (companyId) {
+      const companyExists = await Company.exists({ _id: companyId }).session(session);
+      if (!companyExists) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          message: 'Entreprise cible invalide' 
+        });
+      }
+      updates.company_id = companyId;
+    }
+
+    // 4. Gestion des magasins à AJOUTER
+    if (storeIds) {
+      if (!Array.isArray(storeIds)) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          message: 'storeIds doit être un tableau' 
+        });
+      }
+
+      const validStores = await Store.countDocuments({
+        _id: { $in: storeIds },
+        company_id: companyId || category.company_id
+      }).session(session);
+
+      if (validStores !== storeIds.length) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          message: 'Un ou plusieurs magasins sont invalides' 
+        });
+      }
+
+      updates.$addToSet = { stores: { $each: storeIds } }; // Ajoute sans doublons
+    }
+
+    // 5. Gestion des magasins à RETIRER (NOUVEAU)
+    if (storesToRemove) {
+      if (!Array.isArray(storesToRemove)) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          message: 'storesToRemove doit être un tableau' 
+        });
+      }
+
+      updates.$pullAll = { stores: storesToRemove };
+    }
+
+    // 6. Mise à jour
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { 
+        ...updates, // Combine $set, $addToSet et $pullAll
+        $push: { updatedBy: { user: updater._id, at: new Date() } }
+      },
+      { 
+        new: true,
+        session,
+        runValidators: true 
+      }
+    ).populate('stores', 'name');
+
+    await session.commitTransaction();
+
+    res.status(200).json({
+      success: true,
+      data: updatedCategory,
+      message: 'Catégorie mise à jour avec succès'
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la mise à jour'
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+// Désactivation
+exports.deactivateCategory = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const admin = res.locals.user;
+
+    // 1. Trouver la catégorie
+    const category = await Category.findById(id).session(session);
+    if (!category) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false,
+        message: 'Catégorie non trouvée' 
+      });
+    }
+
+    // 2. Désactivation
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { 
+        $set: { is_active: false },
+        $push: { 
+          updatedBy: { 
+            user: admin._id, 
+            at: new Date(),
+            action: 'deactivation' 
+          } 
+        }
+      },
+      { new: true, session }
+    );
+
+    // 3. Désactiver tous les produits associés (optionnel)
+    await Product.updateMany(
+      { category_id: id },
+      { $set: { is_active: false } },
+      { session }
+    );
+
+    await session.commitTransaction();
+
+    res.status(200).json({
+      success: true,
+      data: updatedCategory,
+      message: 'Catégorie désactivée avec succès'
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la désactivation'
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+// Réactivation
+exports.reactivateCategory = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const admin = res.locals.user;
+
+    // 1. Trouver la catégorie
+    const category = await Category.findById(id).session(session);
+    if (!category) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false,
+        message: 'Catégorie non trouvée' 
+      });
+    }
+
+    // 2. Réactivation
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { 
+        $set: { is_active: true },
+        $push: { 
+          updatedBy: { 
+            user: admin._id, 
+            at: new Date(),
+            action: 'reactivation' 
+          } 
+        }
+      },
+      { new: true, session }
+    );
+
+    await session.commitTransaction();
+
+    res.status(200).json({
+      success: true,
+      data: updatedCategory,
+      message: 'Catégorie réactivée avec succès'
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' 
+        ? error.message 
+        : 'Erreur lors de la réactivation'
+    });
+  } finally {
+    session.endSession();
+  }
+};

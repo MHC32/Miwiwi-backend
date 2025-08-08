@@ -89,3 +89,16 @@ module.exports.isOwner = (req, res, next) => {
     res.status(500).json({ error });
   }
 };
+
+module.exports.verifyCashierToken = (req, res, next) => {
+  const token = req.cookies.jwt || req.headers.authorization?.split(' ')[1];
+  
+  jwt.verify(token, process.env.TOKEN_SECRET, (err, decoded) => {
+    if (err || decoded.role !== 'cashier') {
+      return res.status(401).json({ message: 'Non autorisé' });
+    }
+    
+    req.user = decoded;
+    next();
+  });
+};

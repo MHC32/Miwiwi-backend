@@ -138,6 +138,7 @@ module.exports.createEmployeeForStore = async (req, res) => {
 
 
 
+
 /**
  * @description Met à jour un employé avec gestion avancée des rôles et magasins
  * @route PATCH /api/owner/employees/:id
@@ -351,25 +352,74 @@ module.exports.listOwnerEmployees = async (req, res) => {
 
     // 1. Trouver toutes les companies du owner
     const ownerCompanies = await Company.find({ 
-      owner_id: currentUser._id 
+      owner_id: currentUser._id,
+      is_active: true 
     }).select('_id');
 
-    // 2. Construire la requête de base
+    if (ownerCompanies.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        pagination: {
+          total: 0,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: 0
+        }
+      });
+    }
+
+    const companyIds = ownerCompanies.map(c => c._id);
+
+    // 2. Trouver tous les stores de ces companies
+    const ownerStores = await Store.find({
+      company_id: { $in: companyIds },
+      is_active: true
+    }).select('_id employees supervisor_id');
+
+    // 3. Collecter TOUS les employés (des stores + superviseurs)
+    let allEmployeeIds = [];
+    
+    // Ajouter tous les employés des stores
+    ownerStores.forEach(store => {
+      if (store.employees && store.employees.length > 0) {
+        allEmployeeIds.push(...store.employees);
+      }
+      // Ajouter le superviseur s'il existe
+      if (store.supervisor_id) {
+        allEmployeeIds.push(store.supervisor_id);
+      }
+    });
+
+    // Supprimer les doublons
+    allEmployeeIds = [...new Set(allEmployeeIds.map(id => id.toString()))];
+
+    if (allEmployeeIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        pagination: {
+          total: 0,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: 0
+        }
+      });
+    }
+
+    // 4. Construire la requête pour récupérer les employés
     const query = {
-      createdBy: currentUser._id,
+      _id: { $in: allEmployeeIds },
       role: { $in: ['cashier', 'supervisor'] },
       ...(role && { role }),
-      ...(is_active && { is_active: is_active === 'true' })
+      ...(is_active !== undefined && { is_active: is_active === 'true' })
     };
 
-    // 3. Filtrage par store si spécifié
+    // 5. Filtrage par store spécifique si demandé
     if (storeId) {
       // Vérifier que le store appartient bien au owner
-      const validStore = await Store.findOne({
-        _id: storeId,
-        company_id: { $in: ownerCompanies.map(c => c._id) }
-      });
-
+      const validStore = ownerStores.find(store => store._id.toString() === storeId);
+      
       if (!validStore) {
         return res.status(403).json({
           success: false,
@@ -377,10 +427,19 @@ module.exports.listOwnerEmployees = async (req, res) => {
         });
       }
 
-      query._id = { $in: validStore.employees };
+      // Filtrer pour ce store uniquement
+      const storeEmployeeIds = [];
+      if (validStore.employees && validStore.employees.length > 0) {
+        storeEmployeeIds.push(...validStore.employees);
+      }
+      if (validStore.supervisor_id) {
+        storeEmployeeIds.push(validStore.supervisor_id);
+      }
+
+      query._id = { $in: storeEmployeeIds };
     }
 
-    // 4. Récupération paginée
+    // 6. Récupération paginée avec populate enrichi
     const options = {
       page: parseInt(page),
       limit: parseInt(limit),
@@ -388,12 +447,31 @@ module.exports.listOwnerEmployees = async (req, res) => {
       populate: [
         {
           path: 'stores',
-          select: 'name contact.address.city',
-          match: { is_active: true }
+          select: 'name contact phone company_id',
+          populate: {
+            path: 'company_id',
+            select: 'name ref_code'
+          },
+          match: { 
+            is_active: true,
+            company_id: { $in: companyIds } // Seulement les stores du owner
+          }
         },
         {
           path: 'supervisedStore',
-          select: 'name'
+          select: 'name contact phone company_id',
+          populate: {
+            path: 'company_id',
+            select: 'name ref_code'
+          },
+          match: { 
+            is_active: true,
+            company_id: { $in: companyIds } // Seulement les stores du owner
+          }
+        },
+        {
+          path: 'createdBy',
+          select: 'first_name last_name role'
         }
       ],
       sort: { createdAt: -1 }
@@ -401,17 +479,51 @@ module.exports.listOwnerEmployees = async (req, res) => {
 
     const employees = await User.paginate(query, options);
 
-    // 5. Formater la réponse
+    // 7. Enrichir les données avec les informations des stores
+    const enrichedEmployees = employees.docs.map(employee => {
+      const employeeObj = employee.toObject();
+      
+      // Ajouter les informations de store assignment
+      const assignedStores = [];
+      
+      // Vérifier dans quels stores cet employé est assigné
+      ownerStores.forEach(store => {
+        const isEmployee = store.employees && store.employees.some(
+          empId => empId.toString() === employee._id.toString()
+        );
+        const isSupervisor = store.supervisor_id && 
+          store.supervisor_id.toString() === employee._id.toString();
+        
+        if (isEmployee || isSupervisor) {
+          assignedStores.push({
+            storeId: store._id,
+            role: isSupervisor ? 'supervisor' : 'employee'
+          });
+        }
+      });
+
+      return {
+        ...employeeObj,
+        assignedStores,
+        totalStoresAssigned: assignedStores.length
+      };
+    });
+
+    // 8. Formater la réponse finale
     const response = {
       success: true,
-      data: employees.docs,
+      data: enrichedEmployees,
       pagination: {
         total: employees.totalDocs,
         page: employees.page,
         limit: employees.limit,
         totalPages: employees.totalPages
       },
-      ...(storeId && { storeFilter: storeId })
+      meta: {
+        totalCompanies: ownerCompanies.length,
+        totalStores: ownerStores.length,
+        ...(storeId && { storeFilter: storeId })
+      }
     };
 
     res.status(200).json(response);
@@ -424,5 +536,281 @@ module.exports.listOwnerEmployees = async (req, res) => {
         ? error.message 
         : 'Erreur serveur'
     });
+  }
+};
+
+module.exports.activateEmployee = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+
+  try {
+    // Vérifier les permissions
+    if (!['owner', 'admin'].includes(currentUser.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Action réservée aux propriétaires et administrateurs'
+      });
+    }
+
+    // Trouver l'employé
+    const employee = await User.findById(id);
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employé non trouvé'
+      });
+    }
+
+    // Vérifier que l'employé n'est pas déjà actif
+    if (employee.is_active) {
+      return res.status(400).json({
+        success: false,
+        message: 'Employé déjà actif'
+      });
+    }
+
+    // Activer l'employé
+    const updatedEmployee = await User.findByIdAndUpdate(
+      id,
+      { 
+        $set: { is_active: true },
+        $unset: { deactivatedAt: "", deactivatedBy: "" }
+      },
+      { new: true }
+    ).select('-password -__v');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: updatedEmployee._id,
+        first_name: updatedEmployee.first_name,
+        last_name: updatedEmployee.last_name,
+        phone: updatedEmployee.phone,
+        role: updatedEmployee.role,
+        is_active: updatedEmployee.is_active,
+        stores: updatedEmployee.stores,
+        supervisedStore: updatedEmployee.supervisedStore
+      },
+      message: 'Employé réactivé avec succès'
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la réactivation de l\'employé'
+    });
+  }
+};
+
+/**
+ * @description Récupère les détails complets d'un employé
+ * @route GET /api/employees/:id
+ * @access Private (Owner/Admin/Supervisor concerné)
+ */
+module.exports.getEmployeeDetails = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+
+  try {
+    // Trouver l'employé avec les informations complètes
+    const employee = await User.findById(id)
+      .populate('stores', 'name contact company_id')
+      .populate('supervisedStore', 'name contact company_id')
+      .populate('createdBy', 'first_name last_name role')
+      .select('-password -__v')
+      .lean();
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employé non trouvé'
+      });
+    }
+
+    // Vérifier les permissions
+    let hasAccess = false;
+
+    // Owner/Admin ont toujours accès
+    if (['owner', 'admin'].includes(currentUser.role)) {
+      hasAccess = true;
+    } 
+    // Un superviseur peut voir ses employés directs
+    else if (currentUser.role === 'supervisor' && currentUser.supervisedStore) {
+      const store = await Store.findById(currentUser.supervisedStore);
+      if (store && store.employees.includes(id)) {
+        hasAccess = true;
+      }
+    }
+    // Un employé peut voir ses propres infos
+    else if (currentUser._id.toString() === id) {
+      hasAccess = true;
+    }
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès non autorisé à ces informations'
+      });
+    }
+
+    // Formater la réponse
+    const response = {
+      id: employee._id,
+      first_name: employee.first_name,
+      last_name: employee.last_name,
+      phone: employee.phone,
+      email: employee.email,
+      role: employee.role,
+      is_active: employee.is_active,
+      pin_code: employee.pin_code,
+      stores: employee.stores?.map(store => ({
+        id: store._id,
+        name: store.name,
+        phone: store.contact?.phone,
+        company_id: store.company_id
+      })) || [],
+      supervisedStore: employee.supervisedStore ? {
+        id: employee.supervisedStore._id,
+        name: employee.supervisedStore.name,
+        phone: employee.supervisedStore.contact?.phone,
+        company_id: employee.supervisedStore.company_id
+      } : null,
+      createdBy: employee.createdBy ? {
+        id: employee.createdBy._id,
+        name: `${employee.createdBy.first_name} ${employee.createdBy.last_name}`,
+        role: employee.createdBy.role
+      } : null,
+      createdAt: employee.createdAt,
+      updatedAt: employee.updatedAt
+    };
+
+    res.status(200).json({
+      success: true,
+      data: response
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la récupération des détails de l\'employé'
+    });
+  }
+};
+
+/**
+ * @description Désactive un employé actif
+ * @route PATCH /api/employees/:id/deactivate
+ * @access Private (Owner/Admin seulement)
+ */
+module.exports.deactivateEmployee = async (req, res) => {
+  const { id } = req.params;
+  const currentUser = res.locals.user;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // ======================
+    // 1. VALIDATIONS INITIALES
+    // ======================
+
+    // Vérifier les permissions
+    if (!['owner', 'admin'].includes(currentUser.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: 'Action réservée aux propriétaires et administrateurs'
+      });
+    }
+
+    // Trouver l'employé (sans besoin de peupler les relations)
+    const employee = await User.findById(id).session(session);
+
+    if (!employee) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Employé non trouvé'
+      });
+    }
+
+    // Vérifier que l'employé n'est pas déjà désactivé
+    if (!employee.is_active) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Employé déjà désactivé'
+      });
+    }
+
+    // ======================
+    // 2. MISE À JOUR DE L'EMPLOYÉ (UNIQUEMENT LE STATUT)
+    // ======================
+
+    const updatedEmployee = await User.findByIdAndUpdate(
+      id,
+      { 
+        $set: { 
+          is_active: false,
+          deactivatedAt: new Date(),
+          deactivatedBy: currentUser._id
+        }
+        // On ne touche pas aux relations (pas de $unset)
+      },
+      { 
+        new: true,
+        session,
+        select: '-password -__v',
+        populate: [
+          {
+            path: 'stores',
+            select: 'name _id'
+          },
+          {
+            path: 'supervisedStore',
+            select: 'name _id'
+          }
+        ]
+      }
+    );
+
+    await session.commitTransaction();
+
+    // ======================
+    // 3. RÉPONSE FINALE
+    // ======================
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: updatedEmployee._id,
+        first_name: updatedEmployee.first_name,
+        last_name: updatedEmployee.last_name,
+        phone: updatedEmployee.phone,
+        email: updatedEmployee.email,
+        role: updatedEmployee.role,
+        is_active: updatedEmployee.is_active,
+        stores: updatedEmployee.stores, // On conserve les magasins
+        supervisedStore: updatedEmployee.supervisedStore, // On conserve le magasin supervisé
+        deactivatedAt: updatedEmployee.deactivatedAt,
+        deactivatedBy: updatedEmployee.deactivatedBy
+      },
+      message: 'Employé désactivé avec succès'
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Erreur désactivation employé:', error);
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development'
+        ? error.message
+        : 'Erreur lors de la désactivation de l\'employé'
+    });
+  } finally {
+    await session.endSession();
   }
 };

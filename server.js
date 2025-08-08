@@ -13,6 +13,7 @@ const adminRoutes = require('./routes/admin.routes')
 const companyRoutes = require('./routes/company.routes.js');
 const storeRoutes = require('./routes/store.routes')
 const employeeRoutes = require('./routes/employee.routes')
+const categoryRoutes = require('./routes/category.routes.js')
 // 2. INITIALISATION =============================================
 const app = express();
 
@@ -39,21 +40,22 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.jpg') || path.endsWith('.png') || path.endsWith('.webp')) {
+app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.jpg') || filePath.endsWith('.png') || filePath.endsWith('.webp')) {
       res.set('Cache-Control', 'public, max-age=31536000');
     }
   }
 }));
 
 // 6. ROUTES =====================================================
-app.set('baseUrl', process.env.BASE_URL || `http://localhost:${process.env.PORT}`);
+app.set('baseUrl', process.env.BASE_URL || `http://192.168.1.205:${process.env.PORT}`);
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/owner', companyRoutes);
 app.use('/api/owner/', storeRoutes);
 app.use('/api/owner/', employeeRoutes);
+app.use('/api/owner/', categoryRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
   res.json({ 

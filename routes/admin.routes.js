@@ -3,6 +3,8 @@ const {requireAuth, isAdmin} = require('../middleware/auth.middleware');
 const adminController = require('../controllers/admin.controller');
 const {validateAdminCompanyCreation, companyExists} = require('../middleware/company.middleware');
 const {createCompanyForOwner} = require('../controllers/admin.controller');
+const {validateCategoryInput, checkCategoryPermissions} = require('../middleware/category.middleware')
+const CategoryController = require('../controllers/category.controller');
 
 
 // User
@@ -39,4 +41,12 @@ router.get('/employees/:id/stores', requireAuth, isAdmin, adminController.getEmp
 router.post('/employees/:id/stores', requireAuth, isAdmin, adminController.addEmployeeToStores);
 router.delete('/employees/:id/stores', requireAuth, isAdmin, adminController.removeEmployeeFromStores);
 
+
+
+//Categorie
+router.post('/categories', requireAuth, isAdmin, validateCategoryInput, checkCategoryPermissions, CategoryController.createCategory );
+router.get('/categories', requireAuth, isAdmin, adminController.listAllCategories);
+router.patch('/categories/:id', requireAuth, isAdmin, adminController.updateCategory);
+router.patch('/categories/:id/deactivate', requireAuth, isAdmin, adminController.deactivateCategory);
+router.patch('/categories/:id/reactivate', requireAuth, isAdmin, adminController.reactivateCategory);
 module.exports = router;

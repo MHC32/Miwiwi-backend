@@ -104,3 +104,4 @@ userSchema.statics.login = async function (phone, password) {
 
 userSchema.plugin(mongoosePaginate)
 module.exports = mongoose.model('User', userSchema);
+
