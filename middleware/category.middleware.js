@@ -14,7 +14,7 @@ exports.validateCategoryInput = (req, res, next) => {
   }
 
   if (storeIds && (!Array.isArray(storeIds) || storeIds.some(id => !mongoose.Types.ObjectId.isValid(id)))) {
-    //                                                  Parenthèse manquante ajoutée ici ^
+                                                   
     return res.status(400).json({
       success: false,
       message: 'Liste de magasins invalide'

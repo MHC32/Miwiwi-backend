@@ -8,6 +8,10 @@ const Product = require('../models/products.models.js');
 const Category = require('../models/category.models.js');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
+const { upload: productUpload, checkUploadDir } = require('../middleware/productUpload.js');
+const path = require('path');
+const fs = require('fs');
+
 
 module.exports.createUser = async (req, res) => {
     console.log(req.body);
@@ -1902,4 +1906,637 @@ exports.reactivateCategory = async (req, res) => {
   } finally {
     session.endSession();
   }
+};
+
+
+/**
+ * @description Crée un nouveau produit
+ * @route POST /admin/products
+ * @access Private (Admin seulement)
+ */
+
+module.exports.createProduct = async (req, res) => {
+    const session = await mongoose.startSession();
+    
+    try {
+        session.startTransaction();
+        
+        const { 
+            name,
+            barcode,
+            type,
+            unit,
+            companyId,
+            storeId,
+            categoryId,
+            inventory,
+            pricing,
+            variants
+        } = req.body;
+
+        // Conversion des données JSON
+        let inventoryData, pricingData, variantsData;
+        try {
+            inventoryData = typeof inventory === 'string' ? JSON.parse(inventory) : inventory;
+            pricingData = typeof pricing === 'string' ? JSON.parse(pricing) : pricing;
+            variantsData = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+        } catch (parseError) {
+            await session.abortTransaction();
+            await session.endSession();
+            return res.status(400).json({
+                success: false,
+                message: 'Format JSON invalide dans les données'
+            });
+        }
+
+        // Validation des données
+        if (!name || !type || !companyId || !storeId) {
+            await session.abortTransaction();
+            await session.endSession();
+            cleanUpUploadedFiles(req.files);
+            return res.status(400).json({
+                success: false,
+                message: 'Nom, type, entreprise et magasin sont obligatoires'
+            });
+        }
+
+        // Vérification des références
+        let company, store, category;
+        try {
+            [company, store, category] = await Promise.all([
+                Company.findById(companyId).session(session),
+                Store.findById(storeId).session(session),
+                categoryId ? Category.findById(categoryId).session(session) : Promise.resolve(null)
+            ]);
+        } catch (dbError) {
+            await session.abortTransaction();
+            await session.endSession();
+            cleanUpUploadedFiles(req.files);
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur de base de données lors de la vérification des références'
+            });
+        }
+
+        if (!company || !store) {
+            await session.abortTransaction();
+            await session.endSession();
+            cleanUpUploadedFiles(req.files);
+            return res.status(404).json({
+                success: false,
+                message: 'Entreprise ou magasin non trouvé'
+            });
+        }
+
+        // Validation spécifique carburant
+        if (type === 'fuel') {
+            const fuelConfig = pricingData?.fuel_config;
+            if (!fuelConfig?.price_per_unit || !fuelConfig?.display_unit) {
+                await session.abortTransaction();
+                await session.endSession();
+                cleanUpUploadedFiles(req.files);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Configuration carburant incomplète'
+                });
+            }
+        }
+
+        // Création du produit
+        const productData = {
+            name,
+            barcode,
+            type,
+            unit,
+            company: companyId,
+            store_id: storeId,
+            category_id: categoryId,
+            inventory: {
+                current: inventoryData?.current || 0,
+                min_stock: inventoryData?.min_stock || 5,
+                alert_enabled: inventoryData?.alert_enabled !== false
+            },
+            pricing: pricingData || { mode: 'fixed', base_price: 0 },
+            variants: variantsData,
+            createdBy: req.user._id
+        };
+
+        // Gestion des images
+        if (req.files?.length > 0) {
+            productData.images = req.files.map((file, index) => ({
+                url: `/uploads/products/${file.filename}`,
+                is_main: index === 0,
+                uploadedAt: new Date()
+            }));
+        }
+
+        // Création et mise à jour en transaction
+        let newProduct;
+        try {
+            newProduct = await Product.create([productData], { session });
+            
+            if (categoryId) {
+                await Category.findByIdAndUpdate(
+                    categoryId,
+                    { $addToSet: { products: newProduct[0]._id } },
+                    { session }
+                );
+            }
+            
+            await session.commitTransaction();
+        } catch (transactionError) {
+            await session.abortTransaction();
+            await session.endSession();
+            cleanUpUploadedFiles(req.files);
+            throw transactionError;
+        }
+
+        // Réponse
+      const response = {
+        id: newProduct[0]._id,
+        name: newProduct[0].name,
+        type: newProduct[0].type,
+        company: company.name,
+        store: store.name,
+        createdBy: {              
+          id: req.user._id,
+          name: req.user.first_name + ' ' + req.user.last_name
+        }
+      };
+
+        if (newProduct[0].images?.length > 0) {
+            response.images = newProduct[0].images.map(img => ({
+                url: img.url,
+                is_main: img.is_main
+            }));
+            response.main_image = newProduct[0].images.find(img => img.is_main)?.url;
+        }
+
+        res.status(201).json({
+            success: true,
+            data: response
+        });
+
+    } catch (error) {
+        console.error("Erreur création produit:", error);
+        
+        let status = 500;
+        let errorMessage = 'Erreur lors de la création du produit';
+        
+        if (error.code === 11000) {
+            status = 400;
+            errorMessage = error.keyPattern?.barcode 
+                ? 'Ce code-barres existe déjà' 
+                : 'Duplication de données';
+        } else if (error.name === 'ValidationError') {
+            status = 400;
+            errorMessage = error.message;
+        }
+
+        res.status(status).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development' 
+                ? { message: errorMessage, stack: error.stack } 
+                : errorMessage
+        });
+    } finally {
+        if (session.inTransaction()) {
+            await session.abortTransaction();
+        }
+        await session.endSession();
+    }
+};
+
+
+/**
+ * @description Liste tous les produits avec pagination et filtres
+ * @route GET /admin/products
+ * @access Private (Admin seulement)
+ */
+module.exports.listAllProducts = async (req, res) => {
+    try {
+        const { 
+            page = 1, 
+            limit = 10,
+            companyId,
+            storeId,
+            categoryId,
+            type,
+            search,
+            sortBy = 'name',
+            sortOrder = 'asc'
+        } = req.query;
+
+        // Construction de la requête
+        const query = {};
+        
+        if (companyId) query.company = companyId;
+        if (storeId) query.store_id = storeId;
+        if (categoryId) query.category_id = categoryId;
+        if (type) query.type = type;
+
+        // Recherche textuelle
+        if (search) {
+            query.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { barcode: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        // Options de tri
+        const sortOptions = {};
+        sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+        // Exécution de la requête avec populate
+        const products = await Product.find(query)
+            .select('-__v -history')
+            .populate('company', 'name')
+            .populate('store_id', 'name')
+            .populate('category_id', 'name')
+            .sort(sortOptions)
+            .limit(parseInt(limit))
+            .skip((parseInt(page) - 1) * parseInt(limit));
+
+        // Compte total pour la pagination
+        const total = await Product.countDocuments(query);
+
+        res.status(200).json({
+            success: true,
+            data: products,
+            pagination: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                totalPages: Math.ceil(total / parseInt(limit))
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : 'Erreur lors de la récupération des produits'
+        });
+    }
+};
+
+/**
+ * @description Récupère les détails d'un produit spécifique
+ * @route GET /admin/products/:id
+ * @access Private (Admin seulement)
+ */
+module.exports.getProductDetails = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.id)
+            .populate('company', 'name')
+            .populate('store_id', 'name')
+            .populate('category_id', 'name')
+            .populate('createdBy', 'first_name last_name');
+
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                message: 'Produit non trouvé'
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            data: product
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : 'Erreur lors de la récupération du produit'
+        });
+    }
+};
+
+/**
+ * @description Met à jour un produit existant
+ * @route PATCH /admin/products/:id
+ * @access Private (Admin seulement)
+ */
+module.exports.updateProduct = async (req, res) => {
+    const session = await mongoose.startSession();
+    
+    try {
+        await session.startTransaction();
+        const { id } = req.params;
+        const currentUser = req.user;
+
+        // 1. Vérifier que le produit existe
+        const product = await Product.findById(id).session(session);
+        if (!product) {
+            await session.abortTransaction();
+            cleanUpUploadedFiles(req.files);
+            return res.status(404).json({
+                success: false,
+                message: 'Produit non trouvé'
+            });
+        }
+
+        // 2. Préparation des updates
+        const updates = {};
+        const allowedUpdates = [
+            'name', 'barcode', 'type', 'unit', 'category_id',
+            'inventory', 'pricing', 'variants', 'images'
+        ];
+
+        // Gestion des données JSON pour les champs complexes
+        ['inventory', 'pricing', 'variants'].forEach(field => {
+            if (req.body[field] && typeof req.body[field] === 'string') {
+                try {
+                    updates[field] = JSON.parse(req.body[field]);
+                } catch (e) {
+                    throw new Error(`Format JSON invalide pour le champ ${field}`);
+                }
+            } else if (req.body[field]) {
+                updates[field] = req.body[field];
+            }
+        });
+
+        // Filtrage des updates
+        Object.keys(req.body).forEach(key => {
+            if (allowedUpdates.includes(key) && !['inventory', 'pricing', 'variants'].includes(key)) {
+                updates[key] = req.body[key];
+            }
+        });
+
+        // 3. Gestion des images uploadées
+        if (req.files && req.files.length > 0) {
+            updates.$push = {
+                images: {
+                    $each: req.files.map(file => ({
+                        url: `/uploads/products/${file.filename}`,
+                        is_main: false,
+                        uploadedAt: new Date()
+                    }))
+                }
+            };
+        }
+
+        // 4. Validation spécifique carburant
+        if ((updates.type === 'fuel' || product.type === 'fuel') && updates.pricing) {
+            const fuelConfig = updates.pricing.fuel_config;
+            if (!fuelConfig?.price_per_unit || !fuelConfig?.display_unit) {
+                await session.abortTransaction();
+                cleanUpUploadedFiles(req.files);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Configuration carburant incomplète pour les produits fuel'
+                });
+            }
+        }
+
+        // 5. Gestion de la catégorie
+        if (updates.category_id) {
+            const newCategory = await Category.findById(updates.category_id).session(session);
+            if (!newCategory) {
+                await session.abortTransaction();
+                cleanUpUploadedFiles(req.files);
+                return res.status(404).json({
+                    success: false,
+                    message: 'Nouvelle catégorie non trouvée'
+                });
+            }
+
+            // Retirer de l'ancienne catégorie
+            if (product.category_id) {
+                await Category.findByIdAndUpdate(
+                    product.category_id,
+                    { $pull: { products: product._id } },
+                    { session }
+                );
+            }
+
+            // Ajouter à la nouvelle catégorie
+            await Category.findByIdAndUpdate(
+                updates.category_id,
+                { $addToSet: { products: product._id } },
+                { session }
+            );
+        }
+
+        // 6. Mise à jour du produit
+        const updatePayload = {
+            $set: updates,
+            $push: { 
+                history: {
+                    field: 'update',
+                    changedBy: currentUser._id,
+                    at: new Date(),
+                    details: Object.keys(updates)
+                }
+            }
+        };
+
+        const updatedProduct = await Product.findByIdAndUpdate(
+            id,
+            updatePayload,
+            { 
+                new: true,
+                session,
+                runValidators: true 
+            }
+        ).populate('category_id', 'name');
+
+        await session.commitTransaction();
+
+        // 7. Préparation de la réponse
+        const response = updatedProduct.toObject();
+        
+        // Gestion des images dans la réponse
+        if (updatedProduct.images) {
+            response.images = updatedProduct.images.map(img => ({
+                url: img.url,
+                is_main: img.is_main,
+                uploadedAt: img.uploadedAt
+            }));
+            response.main_image = updatedProduct.images.find(img => img.is_main)?.url;
+        }
+
+        res.status(200).json({
+            success: true,
+            data: response
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        cleanUpUploadedFiles(req.files);
+
+        let status = 500;
+        let errorMessage = 'Erreur lors de la mise à jour du produit';
+
+        if (error.code === 11000) {
+            status = 400;
+            errorMessage = error.keyPattern?.barcode 
+                ? 'Ce code-barres est déjà utilisé' 
+                : 'Duplication de données détectée';
+        } else if (error.message.includes('JSON invalide')) {
+            status = 400;
+            errorMessage = error.message;
+        }
+
+        res.status(status).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development'
+                ? { message: errorMessage, stack: error.stack }
+                : errorMessage
+        });
+    } finally {
+        await session.endSession();
+    }
+};
+
+// Fonction utilitaire pour nettoyer les fichiers uploadés
+function cleanUpUploadedFiles(files = []) {
+    if (!files || files.length === 0) return;
+    
+    files.forEach(file => {
+        try {
+            const filePath = path.join(__dirname, '..', 'public', 'uploads', 'products', file.filename);
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`Fichier nettoyé: ${file.filename}`);
+            }
+        } catch (cleanupError) {
+            console.error('Erreur lors du nettoyage des fichiers:', cleanupError);
+        }
+    });
+}
+
+/**
+ * @description Désactive un produit (soft delete)
+ * @route DELETE /admin/products/:id
+ * @access Private (Admin seulement)
+ */
+module.exports.deactivateProduct = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const { id } = req.params;
+        const currentUser = res.locals.user;
+
+        const product = await Product.findByIdAndUpdate(
+            id,
+            { 
+                $set: { 
+                    is_active: false,
+                    archivedAt: new Date(),
+                    archivedBy: currentUser._id
+                }
+            },
+            { 
+                new: true,
+                session 
+            }
+        );
+
+        if (!product) {
+            await session.abortTransaction();
+            return res.status(404).json({
+                success: false,
+                message: 'Produit non trouvé'
+            });
+        }
+
+        await session.commitTransaction();
+
+        res.status(200).json({
+            success: true,
+            message: 'Produit désactivé avec succès',
+            data: {
+                id: product._id,
+                name: product.name,
+                is_active: false
+            }
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        res.status(500).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : 'Erreur lors de la désactivation du produit'
+        });
+    } finally {
+        session.endSession();
+    }
+};
+
+/**
+ * @description Réactive un produit précédemment désactivé
+ * @route PATCH /admin/products/:id/reactivate
+ * @access Private (Admin seulement)
+ */
+module.exports.reactivateProduct = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const { id } = req.params;
+        const currentUser = res.locals.user;
+
+        const product = await Product.findByIdAndUpdate(
+            id,
+            { 
+                $set: { 
+                    is_active: true 
+                },
+                $unset: { 
+                    archivedAt: "",
+                    archivedBy: "" 
+                },
+                $push: {
+                    history: {
+                        field: 'reactivation',
+                        changedBy: currentUser._id,
+                        at: new Date()
+                    }
+                }
+            },
+            { 
+                new: true,
+                session 
+            }
+        );
+
+        if (!product) {
+            await session.abortTransaction();
+            return res.status(404).json({
+                success: false,
+                message: 'Produit non trouvé'
+            });
+        }
+
+        await session.commitTransaction();
+
+        res.status(200).json({
+            success: true,
+            message: 'Produit réactivé avec succès',
+            data: {
+                id: product._id,
+                name: product.name,
+                is_active: true
+            }
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        res.status(500).json({
+            success: false,
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : 'Erreur lors de la réactivation du produit'
+        });
+    } finally {
+        session.endSession();
+    }
 };

@@ -1,9 +1,9 @@
 const userModel = require('../models/user.models');
-const jwt = require('jsonwebtoken'); 
+const jwt = require('jsonwebtoken');
 const companyModel = require('../models/company.models');
 const storeModel = require('../models/stores.models');
 const bcrypt = require('bcrypt');
-const {formatImageUrl} = require('../utils/fileUtils');
+const { formatImageUrl } = require('../utils/fileUtils');
 
 
 
@@ -11,8 +11,8 @@ const maxAge = 3 * 24 * 60 * 60 * 1000;
 
 const createToken = (id) => {
   return jwt.sign(
-    { id }, 
-    process.env.TOKEN_SECRET, 
+    { id },
+    process.env.TOKEN_SECRET,
     { expiresIn: maxAge }
   );
 };
@@ -20,15 +20,15 @@ const createToken = (id) => {
 
 
 module.exports.signUp = async (req, res) => {
-    console.log(req.body);
-    const {phone, first_name, last_name, password, role} = req.body;
+  console.log(req.body);
+  const { phone, first_name, last_name, password, role } = req.body;
 
-    try {
-        const user = userModel.create({phone, first_name, last_name, password, role})
-        res.status(201).json({user:user._id})
-    } catch (error) {
-        res.status(400).send(error)
-    }
+  try {
+    const user = userModel.create({ phone, first_name, last_name, password, role })
+    res.status(201).json({ user: user._id })
+  } catch (error) {
+    res.status(400).send(error)
+  }
 }
 
 
@@ -37,30 +37,30 @@ module.exports.signIn = async (req, res) => {
 
   try {
     if (!password || password.length < 6) {
-      return res.status(400).json({ 
-        error: 'Le mot de passe doit contenir au moins 6 caractères' 
+      return res.status(400).json({
+        error: 'Le mot de passe doit contenir au moins 6 caractères'
       });
     }
 
     const user = await userModel.login(phone, password);
     const token = createToken(user._id);
-    
-    res.cookie('jwt', token, { 
+
+    res.cookie('jwt', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production', // Important pour HTTPS
       maxAge,
       sameSite: 'strict' // Protection contre CSRF
     });
-    
-    res.status(200).json({ 
+
+    res.status(200).json({
       userId: user._id,
       role: user.role // Si vous voulez utiliser les rôles côté client
     });
 
   } catch (error) {
     console.error('Erreur de connexion:', error.message);
-    res.status(401).json({ 
-      error: 'Authentification échouée : ' + error.message 
+    res.status(401).json({
+      error: 'Authentification échouée : ' + error.message
     });
   }
 };
@@ -83,16 +83,16 @@ module.exports.logout = (req, res) => {
     // Optionnel : Log l'action
     console.log(`Utilisateur déconnecté : ${res.locals.user?._id || 'guest'}`);
 
-    res.status(200).json({ 
+    res.status(200).json({
       success: true,
-      message: 'Déconnexion réussie' 
+      message: 'Déconnexion réussie'
     });
 
   } catch (error) {
     console.error('Erreur logout:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Erreur lors de la déconnexion' 
+      message: 'Erreur lors de la déconnexion'
     });
   }
 };
@@ -103,17 +103,17 @@ module.exports.loginOwner = async (req, res) => {
 
   try {
     const user = await userModel.login(phone, password);
-    
+
     if (!['owner', 'supervisor'].includes(user.role)) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: "Accès réservé aux propriétaires et superviseurs",
-        code: "ROLE_NOT_ALLOWED" 
+        code: "ROLE_NOT_ALLOWED"
       });
     }
 
     const token = createToken(user._id);
-    
-    res.cookie('jwt', token, { 
+
+    res.cookie('jwt', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       maxAge: 3 * 24 * 60 * 60 * 1000 // 3 jours
@@ -122,13 +122,13 @@ module.exports.loginOwner = async (req, res) => {
     res.status(200).json({
       userId: user._id,
       role: user.role,
-      firstName: user.first_name 
+      firstName: user.first_name
     });
 
   } catch (error) {
-    res.status(401).json({ 
+    res.status(401).json({
       error: error.message,
-      code: "LOGIN_FAILED" 
+      code: "LOGIN_FAILED"
     });
   }
 };
@@ -137,11 +137,11 @@ module.exports.loginOwner = async (req, res) => {
 module.exports.getOwnerData = async (req, res) => {
   try {
     const user = res.locals.user;
-    
+
     if (!['owner', 'supervisor'].includes(user.role)) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: "Accès non autorisé",
-        code: "FORBIDDEN" 
+        code: "FORBIDDEN"
       });
     }
 
@@ -162,9 +162,9 @@ module.exports.getOwnerData = async (req, res) => {
       });
 
     if (!ownerData) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         error: "Utilisateur non trouvé",
-        code: "USER_NOT_FOUND" 
+        code: "USER_NOT_FOUND"
       });
     }
 
@@ -189,9 +189,9 @@ module.exports.getOwnerData = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       error: error.message,
-      code: "SERVER_ERROR" 
+      code: "SERVER_ERROR"
     });
   }
 };
@@ -225,7 +225,7 @@ module.exports.loginCashierStep1 = async (req, res) => {
     const accessibleStores = await storeModel.find({
       $and: [
         { is_active: true },
-        { 
+        {
           $or: [
             { employees: user._id },
             { supervisor_id: user._id }
@@ -233,8 +233,8 @@ module.exports.loginCashierStep1 = async (req, res) => {
         }
       ]
     })
-    .select('_id name photo company_id')
-    .lean();
+      .select('_id name photo company_id')
+      .lean();
 
     if (accessibleStores.length === 0) {
       return res.status(403).json({
@@ -315,7 +315,7 @@ module.exports.loginCashierStep2 = async (req, res) => {
         { supervisor_id: userId }
       ]
     })
-    .populate('company_id', 'name settings.currency logo');
+      .populate('company_id', 'name settings.currency logo');
 
     if (!store) {
       return res.status(403).json({
@@ -328,7 +328,8 @@ module.exports.loginCashierStep2 = async (req, res) => {
     // 4. Génération du token final
     const authToken = jwt.sign(
       {
-        userId,
+        id: userId,
+        userId: userId,
         storeId: store._id,
         companyId: store.company_id._id,
         role: 'cashier'
@@ -336,6 +337,15 @@ module.exports.loginCashierStep2 = async (req, res) => {
       process.env.TOKEN_SECRET,
       { expiresIn: '8h' }
     );
+
+    // 5. Définir le cookie HTTP-Only
+    res.cookie('jwt', authToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', // Secure en production
+      sameSite: 'strict',
+      maxAge: 8 * 60 * 60 * 1000, // 8 heures en ms
+      path: '/'
+    });
 
     // 5. Réponse finale avec toutes les infos
     res.status(200).json({
@@ -381,7 +391,7 @@ module.exports.loginCashierStep2 = async (req, res) => {
 
 module.exports.logoutCashier = async (req, res) => {
   try {
-    
+
 
     res.clearCookie('jwt', {
       httpOnly: true,

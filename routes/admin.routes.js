@@ -5,6 +5,8 @@ const {validateAdminCompanyCreation, companyExists} = require('../middleware/com
 const {createCompanyForOwner} = require('../controllers/admin.controller');
 const {validateCategoryInput, checkCategoryPermissions} = require('../middleware/category.middleware')
 const CategoryController = require('../controllers/category.controller');
+const { upload: productUpload, checkUploadDir } = require('../middleware/productUpload');
+
 
 
 // User
@@ -49,4 +51,15 @@ router.get('/categories', requireAuth, isAdmin, adminController.listAllCategorie
 router.patch('/categories/:id', requireAuth, isAdmin, adminController.updateCategory);
 router.patch('/categories/:id/deactivate', requireAuth, isAdmin, adminController.deactivateCategory);
 router.patch('/categories/:id/reactivate', requireAuth, isAdmin, adminController.reactivateCategory);
+
+
+//Products
+router.post('/products',requireAuth, isAdmin, checkUploadDir, productUpload.array('images', 5), adminController.createProduct);
+router.get('/products', requireAuth, isAdmin, adminController.listAllProducts);
+router.get('/products/:id', requireAuth, isAdmin, adminController.getProductDetails);
+router.patch('/products/:id', requireAuth, isAdmin, checkUploadDir, productUpload.array('images', 5), adminController.updateProduct);
+router.delete('/products/:id', requireAuth, isAdmin, adminController.deactivateProduct);
+router.patch('/products/:id/reactivate', requireAuth, isAdmin, adminController.reactivateProduct);
+
+
 module.exports = router;

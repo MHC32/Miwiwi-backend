@@ -102,3 +102,62 @@ module.exports.verifyCashierToken = (req, res, next) => {
     next();
   });
 };
+
+module.exports.isCashier = async (req, res, next) => {
+    try {
+        const user = res.locals.user;
+        
+        // Vérifie que l'utilisateur est authentifié ET a le rôle cashier
+        if (!user || user.role !== 'cashier') {
+            return res.status(403).json({
+                success: false,
+                code: "ACCESS_DENIED",
+                message: "Accès réservé aux caissiers"
+            });
+        }
+
+        // Vérifie que le compte est actif
+        if (!user.is_active) {
+            return res.status(403).json({
+                success: false,
+                code: "ACCOUNT_INACTIVE", 
+                message: "Votre compte caissier est désactivé"
+            });
+        }
+
+        next();
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            code: "SERVER_ERROR",
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : "Erreur de vérification des permissions"
+        });
+    }
+};
+
+
+module.exports.isSupervisor = async (req, res, next) => {
+    try {
+        const user = res.locals.user;
+        
+        if (!user || !['supervisor', 'owner', 'admin'].includes(user.role)) {
+            return res.status(403).json({
+                success: false,
+                code: "ACCESS_DENIED",
+                message: "Accès réservé aux superviseurs, propriétaires et administrateurs"
+            });
+        }
+
+        next();
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            code: "SERVER_ERROR",
+            error: process.env.NODE_ENV === 'development' 
+                ? error.message 
+                : "Erreur de vérification des permissions"
+        });
+    }
+};

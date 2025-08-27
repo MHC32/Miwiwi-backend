@@ -14,6 +14,8 @@ const companyRoutes = require('./routes/company.routes.js');
 const storeRoutes = require('./routes/store.routes')
 const employeeRoutes = require('./routes/employee.routes')
 const categoryRoutes = require('./routes/category.routes.js')
+const productRoutes = require('./routes/product.routes.js');
+const cashierRoutes = require('./routes/cashier.routes.js')
 // 2. INITIALISATION =============================================
 const app = express();
 
@@ -56,6 +58,8 @@ app.use('/api/owner', companyRoutes);
 app.use('/api/owner/', storeRoutes);
 app.use('/api/owner/', employeeRoutes);
 app.use('/api/owner/', categoryRoutes);
+app.use('/api/owner/', productRoutes);
+app.use('/api/cashier/', cashierRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
   res.json({ 
