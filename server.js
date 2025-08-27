@@ -22,7 +22,7 @@ const app = express();
 // 3. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3039',
+  origin: process.env.CLIENT_URL || 'https://kesbiz.net', //'http://localhost:3039'
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -51,7 +51,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'), {
 }));
 
 // 6. ROUTES =====================================================
-app.set('baseUrl', process.env.BASE_URL || `http://192.168.1.205:${process.env.PORT}`);
+app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net:${process.env.PORT}`); //http://192.168.1.205
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/owner', companyRoutes);
