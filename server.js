@@ -1,5 +1,4 @@
 // server.js - Fichier principal de l'application
-
 // 1. IMPORTATIONS ================================================
 require('dotenv').config();
 const express = require('express');
