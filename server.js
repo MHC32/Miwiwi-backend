@@ -1,7 +1,7 @@
 // server.js - Fichier principal de l'application
 
 // 1. IMPORTATIONS ================================================
-require('dotenv').config({ path: './config/.env' });
+require('dotenv').config();
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const morgan = require('morgan');
