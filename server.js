@@ -9,20 +9,22 @@ const cors = require('cors');
 const path = require('path');
 const { checkUser, requireAuth } = require('./middleware/auth.middleware');
 const userRoutes = require('./routes/user.routes');
-const adminRoutes = require('./routes/admin.routes')
+const adminRoutes = require('./routes/admin.routes');
 const companyRoutes = require('./routes/company.routes.js');
-const storeRoutes = require('./routes/store.routes')
-const employeeRoutes = require('./routes/employee.routes')
-const categoryRoutes = require('./routes/category.routes.js')
+const storeRoutes = require('./routes/store.routes');
+const employeeRoutes = require('./routes/employee.routes');
+const categoryRoutes = require('./routes/category.routes.js');
 const productRoutes = require('./routes/product.routes.js');
-const cashierRoutes = require('./routes/cashier.routes.js')
+const cashierRoutes = require('./routes/cashier.routes.js');
+const meterReadingRoutes = require('./routes/meterReading.routes.js');
+const reportRoutes = require('./routes/report.routes');
 // 2. INITIALISATION =============================================
 const app = express();
 
 // 3. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'https://kesbiz.net', //'http://localhost:3039'
+  origin: process.env.CLIENT_URL || 'http://localhost:3039', //'https://kesbiz.net'
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -51,7 +53,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'), {
 }));
 
 // 6. ROUTES =====================================================
-app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net:${process.env.PORT}`); //http://192.168.1.205
+app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net :${process.env.PORT}`); //http://192.168.1.205
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/owner', companyRoutes);
@@ -59,6 +61,9 @@ app.use('/api/owner/', storeRoutes);
 app.use('/api/owner/', employeeRoutes);
 app.use('/api/owner/', categoryRoutes);
 app.use('/api/owner/', productRoutes);
+app.use('/api/owner/', meterReadingRoutes);
+app.use('/api/owner/', reportRoutes);
+
 app.use('/api/cashier/', cashierRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {

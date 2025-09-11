@@ -37,7 +37,7 @@ const meterReadingSchema = new mongoose.Schema({
   verified_at: Date,
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected'],
+    enum: ['pending', 'approved', 'rejected', 'verified'],
     default: 'pending'
   },
   shift_start: {
