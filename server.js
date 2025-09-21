@@ -25,7 +25,7 @@ const app = express();
 // 3. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3039' , //'https://kesbiz.net'
+  origin: process.env.CLIENT_URL || 'https://kesbiz.net' , //  'http://localhost:3039'
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
