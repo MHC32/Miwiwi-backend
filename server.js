@@ -18,13 +18,14 @@ const productRoutes = require('./routes/product.routes.js');
 const cashierRoutes = require('./routes/cashier.routes.js');
 const meterReadingRoutes = require('./routes/meterReading.routes.js');
 const reportRoutes = require('./routes/report.routes');
+const proformatRoutes = require('./routes/proformat.routes.js');
 // 2. INITIALISATION =============================================
 const app = express();
 
 // 3. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3039', //'https://kesbiz.net'
+  origin: process.env.CLIENT_URL || 'http://localhost:3039' , //'https://kesbiz.net'
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -63,8 +64,8 @@ app.use('/api/owner/', categoryRoutes);
 app.use('/api/owner/', productRoutes);
 app.use('/api/owner/', meterReadingRoutes);
 app.use('/api/owner/', reportRoutes);
-
 app.use('/api/cashier/', cashierRoutes);
+app.use('/api/owner/', proformatRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
   res.json({ 
