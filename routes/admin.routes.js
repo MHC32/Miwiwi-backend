@@ -2,7 +2,6 @@ const router = require('express').Router();
 const {requireAuth, isAdmin} = require('../middleware/auth.middleware');
 const adminController = require('../controllers/admin.controller');
 const {validateAdminCompanyCreation, companyExists} = require('../middleware/company.middleware');
-const {createCompanyForOwner} = require('../controllers/admin.controller');
 const {validateCategoryInput, checkCategoryPermissions} = require('../middleware/category.middleware')
 const CategoryController = require('../controllers/category.controller');
 const { upload: productUpload, checkUploadDir } = require('../middleware/productUpload');
@@ -19,7 +18,7 @@ router.patch('/users/:id/reactivate', requireAuth, isAdmin,adminController.react
 
 //Company
 router.get('/companies', requireAuth, isAdmin, adminController.listAllCompany);
-router.post('/companies', requireAuth, isAdmin, companyExists, validateAdminCompanyCreation, createCompanyForOwner);
+router.post('/companies', requireAuth, isAdmin, validateAdminCompanyCreation, adminController.createCompanyForOwner);
 router.patch('/companies/:id', requireAuth, isAdmin, companyExists, adminController.updateCompanyForOwner)
 router.delete('/companies/:id', requireAuth, isAdmin, companyExists, adminController.deleteCompanyForOwner);
 router.patch('/companies/:id/reactivate', requireAuth, isAdmin, companyExists, adminController.reactivateCompanyForOwner);
