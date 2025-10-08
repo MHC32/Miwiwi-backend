@@ -27,8 +27,8 @@ const categorySchema = new mongoose.Schema({
   },
   icon: {
     type: String,
-    enum: ['shopping-basket', 'local-drink', 'food', 'cleaning', 'other'],
-    default: 'other'
+    default: 'other',
+    trim: true
   },
   stores: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -39,15 +39,15 @@ const categorySchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-   is_active: {
-      type: Boolean,
-      default: true
-    },
-    deletedAt: Date,
-    deletedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    }
+  is_active: {
+    type: Boolean,
+    default: true
+  },
+  deletedAt: Date,
+  deletedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }
 }, { 
   timestamps: true,
   toJSON: { virtuals: true } 
