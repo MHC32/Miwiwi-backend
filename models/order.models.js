@@ -38,6 +38,10 @@ const orderSchema = new mongoose.Schema({
       ref: 'Product',
       required: true
     },
+    product_name: {           
+    type: String,
+    required: true
+  },
     quantity: {
       type: Number,
       required: true,
@@ -46,7 +50,23 @@ const orderSchema = new mongoose.Schema({
     total: {
       type: Number,
       required: true
-    }
+    },
+     item_type: {             
+    type: String,
+    enum: ['standard', 'fuel'],
+    default: 'standard'
+  },
+  unit: {                  
+    type: String,
+    enum: ['L', 'gallon', 'unit', 'kg', 'g'],
+    default: null
+  },
+  variant: {               
+    type: mongoose.Schema.Types.ObjectId
+  },
+  variant_name: {           
+    type: String
+  }
   }],
 
   total: {
@@ -95,13 +115,10 @@ orderSchema.virtual('item_count').get(function () {
 
 // Middleware pour calculer les totaux avant sauvegarde
 orderSchema.pre('save', function (next) {
-  this.items.forEach(item => {
-    item.total = (item.unit_price * item.quantity) * (1 - (item.discount / 100));
-  });
-
-  this.subtotal = this.items.reduce((sum, item) => sum + item.total, 0);
-  this.total = this.subtotal + this.tax - this.discount;
-
+  // Recalculer le total si les items changent
+  if (this.isModified('items')) {
+    this.total = this.items.reduce((sum, item) => sum + item.total, 0);
+  }
   next();
 });
 

@@ -7,6 +7,11 @@ const mongoose = require('mongoose');
 const MeterReading = require('../models/meterReading.models');
 const { formatImageUrl } = require('../utils/fileUtils');
 
+// ==================== FONCTIONS UTILITAIRES ====================
+
+/**
+ * Valider les informations client
+ */
 const validateClient = (client) => {
   const errors = [];
   
@@ -35,6 +40,124 @@ const validateClient = (client) => {
   return errors;
 };
 
+/**
+ * Traiter les items d'une commande/proformat
+ */
+async function processItems(items, storeId, session, checkStock = true) {
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    throw {
+      name: 'ValidationError',
+      message: 'Au moins un produit est requis',
+      code: 'NO_ITEMS'
+    };
+  }
+
+  const processedItems = [];
+  const productUpdates = [];
+  let total = 0;
+
+  for (const item of items) {
+    // Récupérer le produit
+    const product = await Product.findById(item.product)
+      .populate('category_id', 'name')
+      .session(session);
+
+    if (!product) {
+      throw {
+        name: 'ValidationError',
+        message: `Produit ${item.product} non trouvé`,
+        code: 'PRODUCT_NOT_FOUND'
+      };
+    }
+
+    if (!product.is_active) {
+      throw {
+        name: 'ValidationError',
+        message: `Le produit "${product.name}" n'est plus disponible`,
+        code: 'PRODUCT_INACTIVE'
+      };
+    }
+
+    // Calculer quantité et prix
+    let quantity = parseFloat(item.quantity);
+    let unit_price = product.pricing?.base_price || product.price || 0;
+    
+    // Pour les produits fuel avec montant
+    if (item.amount && product.type === 'fuel') {
+      const amount = parseFloat(item.amount);
+      
+      // Utiliser fuel_config si disponible, sinon le prix de base
+      const fuelPrice = product.pricing?.fuel_config?.price_per_unit || unit_price;
+      
+      if (fuelPrice <= 0) {
+        throw {
+          name: 'ValidationError',
+          message: `Configuration prix carburant manquante pour "${product.name}"`,
+          code: 'FUEL_CONFIG_MISSING'
+        };
+      }
+      
+      quantity = amount / fuelPrice;
+      unit_price = fuelPrice;
+    }
+
+    // Vérifier le stock (si demandé et si ce n'est pas du fuel)
+    if (checkStock && product.type !== 'fuel') {
+      const currentStock = product.inventory?.current || 0;
+      if (currentStock < quantity) {
+        throw {
+          name: 'ValidationError',
+          message: `Stock insuffisant pour "${product.name}". Disponible: ${currentStock}, demandé: ${quantity}`,
+          code: 'INSUFFICIENT_STOCK'
+        };
+      }
+      
+      // Préparer la mise à jour du stock
+      productUpdates.push({
+        updateOne: {
+          filter: { _id: product._id },
+          update: { $inc: { 'inventory.current': -quantity } }
+        }
+      });
+    }
+
+    const itemTotal = unit_price * quantity;
+    total += itemTotal;
+
+    processedItems.push({
+      product: product._id,
+      product_name: product.name,
+      item_type: product.type || 'standard',
+      quantity: quantity,
+      unit_price: unit_price,
+      total: itemTotal,
+      unit: product.unit || 'unité',
+      variant: item.variant || null,
+      variant_name: item.variant_name || null
+    });
+  }
+
+  return { processedItems, total, productUpdates };
+}
+
+/**
+ * Convertir les items de proformat en items de commande
+ */
+function convertProformatItemsToOrder(proformatItems) {
+  return proformatItems.map(item => ({
+    product: item.product,
+    product_name: item.product_name,
+    item_type: item.item_type,
+    quantity: item.quantity,
+    unit_price: item.unit_price,
+    total: item.total,
+    unit: item.unit,
+    variant: item.variant,
+    variant_name: item.variant_name
+  }));
+}
+
+// ==================== CONTROLLERS CATÉGORIES ====================
 
 // Lister toutes les catégories actives
 module.exports.listCategories = async (req, res) => {
@@ -73,6 +196,8 @@ module.exports.listCategories = async (req, res) => {
         });
     }
 };
+
+// ==================== CONTROLLERS PRODUITS ====================
 
 // Lister tous les produits actifs
 module.exports.listProducts = async (req, res) => {
@@ -213,12 +338,10 @@ module.exports.listProductsByCategory = async (req, res) => {
     }
 };
 
-
+// ==================== CONTROLLERS COMMANDES ====================
 
 /**
  * Crée un nouveau ticket/commande - VERSION CORRIGÉE
- * @param {Object} req - Requête HTTP
- * @param {Object} res - Réponse HTTP
  */
 module.exports.createOrder = async (req, res, next) => {
   let session;
@@ -229,6 +352,8 @@ module.exports.createOrder = async (req, res, next) => {
     
     const { items, storeId } = req.body;
     const cashier = res.locals.user;
+
+    console.log('📥 Données reçues createOrder:', { items, storeId, cashier: cashier._id });
 
     // =================== 1. VALIDATION RENFORCÉE ===================
     
@@ -241,7 +366,7 @@ module.exports.createOrder = async (req, res, next) => {
       };
     }
 
-    // Validation items - CORRECTION DU BUG #1
+    // Validation items
     if (!items || !Array.isArray(items) || items.length === 0) {
       throw {
         name: 'ValidationError',
@@ -250,7 +375,7 @@ module.exports.createOrder = async (req, res, next) => {
       };
     }
 
-    // NOUVELLE VALIDATION : Vérifier chaque item basiquement
+    // Vérifier chaque item
     for (const [index, item] of items.entries()) {
       if (!item.product || !mongoose.Types.ObjectId.isValid(item.product)) {
         throw {
@@ -260,8 +385,6 @@ module.exports.createOrder = async (req, res, next) => {
         };
       }
 
-      // Pour les produits carburant : valider 'amount'
-      // Pour les autres : valider 'quantity'
       if (item.type === 'fuel' || item.productType === 'fuel') {
         if (!item.amount || item.amount <= 0 || isNaN(item.amount)) {
           throw {
@@ -300,167 +423,21 @@ module.exports.createOrder = async (req, res, next) => {
       };
     }
 
-    // =================== 3. TRAITEMENT SÉCURISÉ DES ITEMS ===================
+    // =================== 3. TRAITEMENT DES ITEMS ===================
     
-    let total = 0;
-    const processedItems = [];
-    const productUpdates = [];
-    const productIds = items.map(item => item.product);
+    const { processedItems, total, productUpdates } = await processItems(
+      items,
+      storeId,
+      session,
+      true // checkStock = true pour commande
+    );
 
-    // CORRECTION BUG #2 : Récupérer TOUS les produits d'un coup pour éviter les race conditions
-    const products = await Product.find({
-      _id: { $in: productIds },
-      is_active: true
-    })
-    .session(session)
-    .select('name pricing inventory type variants is_active store_id');
-
-    // Vérifier que tous les produits existent
-    if (products.length !== productIds.length) {
-      const foundIds = products.map(p => p._id.toString());
-      const missingIds = productIds.filter(id => !foundIds.includes(id.toString()));
-      throw {
-        name: 'NotFoundError',
-        message: `Produits introuvables: ${missingIds.join(', ')}`,
-        code: 'PRODUCTS_NOT_FOUND'
-      };
-    }
-
-    // Créer un map pour un accès rapide
-    const productMap = new Map(products.map(p => [p._id.toString(), p]));
-
-    // =================== 4. VALIDATION ET CALCULS ===================
-    
-    for (const [index, item] of items.entries()) {
-      const product = productMap.get(item.product.toString());
-      
-      if (!product) {
-        throw {
-          name: 'NotFoundError',
-          message: `Produit ${index + 1}: Introuvable`,
-          code: 'PRODUCT_NOT_FOUND'
-        };
-      }
-
-      // CORRECTION BUG #3 : Vérifier que le produit appartient au bon magasin
-      if (product.store_id.toString() !== storeId.toString()) {
-        throw {
-          name: 'ValidationError',
-          message: `Produit ${product.name}: N'appartient pas à ce magasin`,
-          code: 'PRODUCT_WRONG_STORE'
-        };
-      }
-
-      let itemTotal, processedItem;
-
-      if (product.type === 'fuel') {
-        // ========= TRAITEMENT CARBURANT =========
-        const amount = parseFloat(item.amount);
-        
-        if (!amount || amount <= 0) {
-          throw {
-            name: 'ValidationError',
-            message: `Carburant ${product.name}: Montant invalide`,
-            code: 'INVALID_FUEL_AMOUNT'
-          };
-        }
-
-        const fuelConfig = product.pricing.fuel_config;
-        if (!fuelConfig || !fuelConfig.price_per_unit) {
-          throw {
-            name: 'ValidationError',
-            message: `Carburant ${product.name}: Configuration prix manquante`,
-            code: 'FUEL_CONFIG_MISSING'
-          };
-        }
-
-        const quantity = amount / fuelConfig.price_per_unit;
-        itemTotal = amount;
-
-        processedItem = {
-          product: product._id,
-          quantity: parseFloat(quantity.toFixed(3)),
-          unit_price: fuelConfig.price_per_unit,
-          total: itemTotal,
-          unit: fuelConfig.display_unit || 'L',
-          product_name: product.name,
-          item_type: 'fuel'
-        };
-
-      } else {
-        // ========= TRAITEMENT PRODUITS STANDARDS =========
-        const quantity = parseFloat(item.quantity);
-        
-        if (!quantity || quantity <= 0) {
-          throw {
-            name: 'ValidationError',
-            message: `Produit ${product.name}: Quantité invalide`,
-            code: 'INVALID_QUANTITY'
-          };
-        }
-
-        // CORRECTION BUG #2 : VÉRIFICATION STOCK AVANT COMMIT
-        if (product.inventory.current < quantity) {
-          throw {
-            name: 'InventoryError',
-            message: `Produit ${product.name}: Stock insuffisant (disponible: ${product.inventory.current}, demandé: ${quantity})`,
-            code: 'INSUFFICIENT_STOCK'
-          };
-        }
-
-        // Gestion des variants
-        let variant = null;
-        let variantName = null;
-        let unitPrice = product.pricing.base_price;
-        
-        if (item.variant) {
-          variant = product.variants.id(item.variant);
-          if (!variant) {
-            throw {
-              name: 'ValidationError',
-              message: `Produit ${product.name}: Variant introuvable`,
-              code: 'VARIANT_NOT_FOUND'
-            };
-          }
-          variantName = variant.name;
-          unitPrice = product.pricing.base_price + (variant.price_offset || 0);
-        }
-
-        itemTotal = unitPrice * quantity;
-
-        processedItem = {
-          product: product._id,
-          quantity: quantity,
-          unit_price: unitPrice,
-          total: itemTotal,
-          product_name: product.name,
-          item_type: 'standard',
-          ...(variant && { 
-            variant: item.variant, 
-            variant_name: variantName 
-          })
-        };
-
-        // Préparation de la mise à jour du stock
-        productUpdates.push({
-          updateOne: {
-            filter: { _id: product._id },
-            update: { $inc: { 'inventory.current': -quantity } },
-            session: session
-          }
-        });
-      }
-
-      total += itemTotal;
-      processedItems.push(processedItem);
-    }
-
-    // =================== 5. CRÉATION DE LA COMMANDE ===================
+    // =================== 4. CRÉATION DE LA COMMANDE ===================
     
     const order = new Order({
       cashier: cashier._id,
       items: processedItems,
-      total: Math.round(total * 100) / 100, // Arrondir à 2 décimales
+      total: Math.round(total * 100) / 100,
       payment_status: 'paid',
       status: 'completed',
       store: storeId,
@@ -469,17 +446,15 @@ module.exports.createOrder = async (req, res, next) => {
 
     await order.save({ session });
 
-    // =================== 6. MISE À JOUR DES STOCKS ===================
+    // =================== 5. MISE À JOUR DES STOCKS ===================
     
-    // CORRECTION BUG #3 : Mise à jour atomique avec vérification des contraintes
     if (productUpdates.length > 0) {
       try {
         const bulkResult = await Product.bulkWrite(productUpdates, { 
           session,
-          ordered: true // Arrêter si une opération échoue
+          ordered: true
         });
 
-        // Vérifier que toutes les mises à jour ont réussi
         if (bulkResult.modifiedCount !== productUpdates.length) {
           throw new Error('Certaines mises à jour de stock ont échoué');
         }
@@ -493,11 +468,13 @@ module.exports.createOrder = async (req, res, next) => {
       }
     }
 
-    // =================== 7. COMMIT TRANSACTION ===================
+    // =================== 6. COMMIT TRANSACTION ===================
     
     await session.commitTransaction();
 
-    // =================== 8. RÉPONSE OPTIMISÉE ===================
+    console.log('✅ Commande créée avec succès:', order._id);
+
+    // =================== 7. RÉPONSE ===================
     
     res.status(201).json({
       success: true,
@@ -506,7 +483,7 @@ module.exports.createOrder = async (req, res, next) => {
         ref_code: order.ref_code,
         store: {
           id: order.store,
-          name: store.name // Utiliser les données déjà récupérées
+          name: store.name
         },
         cashier: {
           id: order.cashier,
@@ -536,9 +513,8 @@ module.exports.createOrder = async (req, res, next) => {
     });
 
   } catch (error) {
-    // =================== 9. GESTION D'ERREURS ROBUSTE ===================
+    console.error('❌ Erreur createOrder:', error);
     
-    // CORRECTION BUG #4 : Rollback sécurisé
     if (session) {
       try {
         if (session.inTransaction()) {
@@ -548,10 +524,7 @@ module.exports.createOrder = async (req, res, next) => {
         console.error('Rollback failed:', rollbackError);
       }
     }
-    
-    console.error('Order Creation Error:', error);
 
-    // Types d'erreurs spécifiques
     const errorTypes = {
       ValidationError: { status: 400, code: error.code || 'VALIDATION_ERROR' },
       AuthorizationError: { status: 403, code: error.code || 'AUTH_ERROR' },
@@ -577,8 +550,6 @@ module.exports.createOrder = async (req, res, next) => {
     res.status(errorType.status).json(response);
 
   } finally {
-    // =================== 10. NETTOYAGE DES RESSOURCES ===================
-    
     if (session) {
       try {
         await session.endSession();
@@ -589,6 +560,7 @@ module.exports.createOrder = async (req, res, next) => {
   }
 };
 
+// ==================== CONTROLLERS RAPPORTS ====================
 
 module.exports.getCashierReports = async (req, res) => {
   try {
@@ -596,10 +568,7 @@ module.exports.getCashierReports = async (req, res) => {
     const cashier = res.locals.user;
 
     console.log('🔍 DEBUG - Query params:', { startDate, endDate, storeId });
-    console.log('🔍 DEBUG - Cashier ID:', cashier._id.toString());
-    console.log('🔍 DEBUG - Cashier stores:', cashier.stores);
 
-    // Validation des dates
     if (!startDate || !endDate) {
       return res.status(400).json({
         success: false,
@@ -607,10 +576,9 @@ module.exports.getCashierReports = async (req, res) => {
       });
     }
 
-    // CORRECTION TIMEZONE - Utiliser UTC pour toute la journée
     const start = new Date(Date.UTC(
       parseInt(startDate.split('-')[0]),
-      parseInt(startDate.split('-')[1]) - 1, // mois 0-based
+      parseInt(startDate.split('-')[1]) - 1,
       parseInt(startDate.split('-')[2]),
       0, 0, 0, 0
     ));
@@ -622,12 +590,6 @@ module.exports.getCashierReports = async (req, res) => {
       23, 59, 59, 999
     ));
 
-    console.log('🔍 DEBUG - Parsed dates UTC:', { 
-      start: start.toISOString(), 
-      end: end.toISOString() 
-    });
-
-    // Convertir tous les ObjectId proprement
     const cashierObjectId = new mongoose.Types.ObjectId(cashier._id);
     const storeObjectIds = cashier.stores.map(store => 
       new mongoose.Types.ObjectId(store.toString())
@@ -638,7 +600,6 @@ module.exports.getCashierReports = async (req, res) => {
     if (storeId) {
       const requestedStoreId = new mongoose.Types.ObjectId(storeId);
       
-      // Vérification avec ObjectId.equals() au lieu de string comparison
       if (!storeObjectIds.some(storeId => storeId.equals(requestedStoreId))) {
         return res.status(403).json({
           success: false,
@@ -648,9 +609,6 @@ module.exports.getCashierReports = async (req, res) => {
       storeFilter.store = requestedStoreId;
     }
 
-    console.log('🔍 DEBUG - Store filter:', storeFilter);
-
-    // REQUÊTE CORRIGÉE - ObjectId et dates UTC
     const matchStage = {
       ...storeFilter,
       created_at: { 
@@ -660,18 +618,8 @@ module.exports.getCashierReports = async (req, res) => {
       cashier: cashierObjectId
     };
 
-    console.log('🔍 DEBUG - Match stage:', {
-      ...matchStage,
-      created_at: {
-        $gte: matchStage.created_at.$gte.toISOString(),
-        $lte: matchStage.created_at.$lte.toISOString()
-      }
-    });
-
     const orders = await Order.aggregate([
-      {
-        $match: matchStage
-      },
+      { $match: matchStage },
       {
         $group: {
           _id: null,
@@ -686,8 +634,6 @@ module.exports.getCashierReports = async (req, res) => {
         }
       }
     ]);
-
-    console.log('🔍 DEBUG - Aggregation result:', orders);
 
     const [store] = await Promise.all([
       storeId ? Store.findById(storeId).select('name') : Promise.resolve(null)
@@ -704,7 +650,7 @@ module.exports.getCashierReports = async (req, res) => {
       success: true,
       data: {
         period: {
-          startDate: startDate, // Utiliser les dates originales pour l'affichage
+          startDate: startDate,
           endDate: endDate
         },
         generatedAt: new Date().toISOString(),
@@ -739,15 +685,11 @@ module.exports.getCashierReports = async (req, res) => {
   }
 };
 
-// Controller pour lister les tickets - Version Corrigée
 module.exports.listTickets = async (req, res) => {
   try {
     const { startDate, endDate, page = 1, limit = 10 } = req.query;
     const cashier = res.locals.user;
 
-    console.log('🔍 DEBUG Tickets - Query params:', { startDate, endDate, page, limit });
-
-    // Validation des dates
     if (!startDate || !endDate) {
       return res.status(400).json({
         success: false,
@@ -755,7 +697,6 @@ module.exports.listTickets = async (req, res) => {
       });
     }
 
-    // CORRECTION TIMEZONE - Utiliser UTC
     const start = new Date(Date.UTC(
       parseInt(startDate.split('-')[0]),
       parseInt(startDate.split('-')[1]) - 1,
@@ -770,12 +711,6 @@ module.exports.listTickets = async (req, res) => {
       23, 59, 59, 999
     ));
 
-    console.log('🔍 DEBUG Tickets - Parsed dates UTC:', { 
-      start: start.toISOString(), 
-      end: end.toISOString() 
-    });
-
-    // Construction de la requête - ObjectId et dates UTC
     const query = {
       cashier: new mongoose.Types.ObjectId(cashier._id),
       created_at: { 
@@ -784,15 +719,6 @@ module.exports.listTickets = async (req, res) => {
       }
     };
 
-    console.log('🔍 DEBUG Tickets - Query:', {
-      ...query,
-      created_at: {
-        $gte: query.created_at.$gte.toISOString(),
-        $lte: query.created_at.$lte.toISOString()
-      }
-    });
-
-    // Exécution de la requête avec pagination
     const tickets = await Order.find(query)
       .select('ref_code total status created_at')
       .sort({ created_at: -1 })
@@ -801,8 +727,6 @@ module.exports.listTickets = async (req, res) => {
       .lean();
 
     const total = await Order.countDocuments(query);
-
-    console.log('🔍 DEBUG Tickets - Found:', tickets.length, 'Total:', total);
 
     res.status(200).json({
       success: true,
@@ -820,7 +744,7 @@ module.exports.listTickets = async (req, res) => {
         totalPages: Math.ceil(total / parseInt(limit))
       },
       period: {
-        startDate: startDate, // Dates originales pour l'affichage
+        startDate: startDate,
         endDate: endDate
       }
     });
@@ -836,14 +760,13 @@ module.exports.listTickets = async (req, res) => {
   }
 };
 
-
+// ==================== CONTROLLERS RELEVÉS DE COMPTEURS ====================
 
 module.exports.createMeterReading = async (req, res) => {
     try {
       const { storeId, reading_value, reading_type, notes } = req.body;
       const cashier = res.locals.user;
 
-      // Validation
       if (!storeId || !reading_value || !req.file) {
         return res.status(400).json({
           success: false,
@@ -851,7 +774,6 @@ module.exports.createMeterReading = async (req, res) => {
         });
       }
 
-      // Vérifier que le caissier a accès à ce magasin
       if (!cashier.stores.includes(storeId)) {
         return res.status(403).json({
           success: false,
@@ -859,7 +781,6 @@ module.exports.createMeterReading = async (req, res) => {
         });
       }
 
-      // Pour les relevés de début, vérifier qu'il n'y en a pas déjà un aujourd'hui
       if (reading_type === 'start') {
         const hasStartReading = await MeterReading.hasStartReading(
           storeId, 
@@ -875,7 +796,6 @@ module.exports.createMeterReading = async (req, res) => {
         }
       }
 
-      // Créer le relevé
       const meterReading = await MeterReading.create({
         store: storeId,
         cashier: cashier._id,
@@ -908,30 +828,23 @@ module.exports.createMeterReading = async (req, res) => {
     }
   }
 
+// ==================== CONTROLLERS PROFORMATS ====================
 
 /**
  * Crée une nouvelle proformat POS
  */
+// ==================== CREATE PROFORMAT ====================
 module.exports.createProformat = async (req, res, next) => {
-  let session;
-  
-  try {
-    session = await mongoose.startSession();
-    await session.startTransaction();
-    
-    const { 
-      items, 
-      storeId, 
-      client, 
-      validity_days = 30,
-      tax_rate = 0,
-      discount_global_percent = 0,
-      notes 
-    } = req.validatedData || req.body;
-    
-    const cashier = res.locals.user;
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-    // 1. VÉRIFICATION AUTORISATION MAGASIN
+  try {
+    console.log('📥 Données reçues createProformat:', req.body);
+    
+    const { items, storeId, client, validity_days = 30, tax_rate = 0, discount_global_percent = 0, notes } = req.body;
+    const cashier = req.user;
+
+    // Validation store avec autorisation
     const store = await Store.findOne({
       _id: storeId,
       is_active: true,
@@ -939,131 +852,151 @@ module.exports.createProformat = async (req, res, next) => {
         { employees: cashier._id },
         { supervisor_id: cashier._id }
       ]
-    })
-    .populate('company_id', 'settings.currency')
-    .session(session);
+    }).populate('company_id.settings.currency');
 
     if (!store) {
-      throw {
-        name: 'AuthorizationError',
-        message: 'Accès non autorisé à ce magasin',
-        code: 'STORE_ACCESS_DENIED'
-      };
+      throw createError.Unauthorized('Accès non autorisé à ce magasin', 'STORE_ACCESS_DENIED');
     }
 
-    // 2. VALIDATION CLIENT
+    console.log('✅ Store trouvé:', store.name);
+
+    // Validation client
     const clientErrors = validateClient(client);
     if (clientErrors.length > 0) {
-      throw {
-        name: 'ValidationError',
-        message: 'Informations client invalides',
-        code: 'INVALID_CLIENT_DATA',
-        details: clientErrors
-      };
+      throw createError.BadRequest(`Données client invalides: ${clientErrors.join(', ')}`);
     }
 
-    // 3. TRAITEMENT DES ITEMS (SANS vérification stock pour proformat)
-    const { processedItems, total } = await processItems(
+    console.log('✅ Client validé');
+
+    // ✅ CORRECTION: Traiter les items AVEC calcul des totaux
+    const { processedItems, total: subtotal } = await processItems(
       items, 
       storeId, 
       session, 
-      false // checkStock = false pour proformat
+      false // pas de vérification stock pour proformat
     );
 
-    // 4. CRÉATION DE LA PROFORMAT
-    const currency = store.company_id.settings.currency;
-    
+    console.log('✅ Items traités:', processedItems.length);
+    console.log('💰 Subtotal calculé:', subtotal);
+
+    // ✅ CORRECTION: Calculer les totaux AVANT création
+    const discount_percent = discount_global_percent || 0;
+    const discount_amount = subtotal * (discount_percent / 100);
+    const taxableAmount = subtotal - discount_amount;
+    const tax_amount = taxableAmount * ((tax_rate || 0) / 100);
+    const finalTotal = subtotal - discount_amount + tax_amount;
+
+    // Arrondir à 2 décimales
+    const roundedTotal = Math.round(finalTotal * 100) / 100;
+    const roundedTaxAmount = Math.round(tax_amount * 100) / 100;
+    const roundedDiscountAmount = Math.round(discount_amount * 100) / 100;
+
+    // ✅ CORRECTION: Calculer expires_at AVANT création
+    const expirationDate = new Date();
+    expirationDate.setDate(expirationDate.getDate() + (validity_days || 30));
+
+    console.log('📊 Totaux calculés:', {
+      subtotal,
+      discount_amount: roundedDiscountAmount,
+      tax_amount: roundedTaxAmount,
+      total: roundedTotal,
+      expires_at: expirationDate
+    });
+
+    // ✅ CORRECTION: Créer le proformat avec TOUTES les valeurs requises
     const proformat = new Proformat({
       cashier: cashier._id,
       store: storeId,
-      client: {
-        name: client.name.trim(),
-        phone: client.phone?.trim(),
-        email: client.email?.trim(),
-        address: client.address?.trim()
-      },
-      items: processedItems,
-      subtotal: total,
-      tax_rate: parseFloat(tax_rate) || 0,
-      discount_global_percent: parseFloat(discount_global_percent) || 0,
-      validity_days: parseInt(validity_days),
-      currency: currency,
-      notes: notes?.trim(),
       created_by: cashier._id,
-      printed_at: new Date(), // Marqué comme imprimé automatiquement
-      print_count: 1
+      
+      client: {
+        name: client.name,
+        phone: client.phone || undefined,
+        email: client.email || undefined,
+        address: client.address || undefined
+      },
+      
+      items: processedItems,
+      
+      // ✅ CRITIQUE: Fournir les valeurs calculées
+      subtotal: subtotal,
+      tax_rate: tax_rate || 0,
+      tax_amount: roundedTaxAmount,
+      discount_percent: discount_percent,
+      discount_amount: roundedDiscountAmount,
+      total: roundedTotal,
+      
+      validity_days: validity_days || 30,
+      expires_at: expirationDate, // ✅ CRITIQUE
+      
+      currency: store.company_id?.settings?.currency || 'HTG',
+      notes: notes || `Proformat créée le ${new Date().toLocaleDateString()}`
     });
 
+    console.log('💾 Sauvegarde du proformat...');
     await proformat.save({ session });
 
-    // 5. COMMIT TRANSACTION
     await session.commitTransaction();
+    console.log('✅ Transaction committée avec succès');
 
-    // 6. RÉPONSE FORMATÉE POUR POS
+    // Réponse formatée
+    const response = {
+      id: proformat._id,
+      ref_code: proformat.ref_code,
+      store: {
+        id: store._id,
+        name: store.name
+      },
+      client: proformat.client,
+      status: proformat.status,
+      
+      items: proformat.items.map(item => ({
+        product_id: item.product,
+        product_name: item.product_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        total: item.total,
+        unit: item.unit,
+        variant_name: item.variant_name
+      })),
+      
+      subtotal: proformat.subtotal,
+      tax_rate: proformat.tax_rate,
+      tax_amount: proformat.tax_amount,
+      discount_percent: proformat.discount_percent,
+      discount_amount: proformat.discount_amount,
+      total: proformat.total,
+      currency: proformat.currency,
+      
+      validity_days: proformat.validity_days,
+      expires_at: proformat.expires_at,
+      days_remaining: proformat.days_remaining,
+      
+      notes: proformat.notes,
+      created_at: proformat.created_at
+    };
+
+    console.log('✅ Proformat créée avec succès:', response.ref_code);
+
     res.status(201).json({
       success: true,
-      data: {
-        id: proformat._id,
-        ref_code: proformat.ref_code,
-        store: {
-          id: store._id,
-          name: store.name
-        },
-        client: {
-          name: proformat.client.name,
-          phone: proformat.client.phone,
-          email: proformat.client.email,
-          address: proformat.client.address
-        },
-        status: proformat.status,
-        subtotal: proformat.subtotal,
-        discount_global_percent: proformat.discount_global_percent,
-        discount_global_amount: proformat.discount_global_amount,
-        tax_rate: proformat.tax_rate,
-        tax_amount: proformat.tax_amount,
-        total: proformat.total,
-        currency: proformat.currency,
-        validity_days: proformat.validity_days,
-        expires_at: proformat.expires_at,
-        days_remaining: proformat.days_remaining,
-        items: proformat.items.map(item => ({
-          product: {
-            id: item.product,
-            name: item.product_name,
-            type: item.item_type
-          },
-          quantity: item.quantity,
-          unit_price: item.unit_price,
-          total: item.total,
-          discount_percent: item.discount_percent || 0,
-          ...(item.unit && { unit: item.unit }),
-          ...(item.variant && { 
-            variant: item.variant,
-            variant_name: item.variant_name 
-          })
-        })),
-        items_count: proformat.item_count,
-        notes: proformat.notes,
-        conditions: proformat.conditions,
-        printed_at: proformat.printed_at,
-        print_count: proformat.print_count,
-        created_at: proformat.created_at
-      },
-      message: 'Proforma créée avec succès - Prête pour impression'
+      message: 'Proformat créée avec succès',
+      data: response
     });
 
   } catch (error) {
-    if (session && session.inTransaction()) {
-      await session.abortTransaction();
+    await session.abortTransaction();
+    console.error('❌ Erreur createProformat:', error);
+    
+    if (error.name === 'ValidationError') {
+      return next(createError.BadRequest(error.message));
     }
+    
     next(error);
   } finally {
-    if (session) {
-      await session.endSession();
-    }
+    session.endSession();
   }
 };
-
 /**
  * Liste les proformats du caissier
  */
@@ -1082,12 +1015,10 @@ module.exports.listProformats = async (req, res, next) => {
     
     const cashier = res.locals.user;
 
-    // CONSTRUCTION de la requête
     const query = {
       cashier: cashier._id
     };
 
-    // Filtrage par statut avec gestion automatique des expirées
     if (status) {
       if (status === 'expired') {
         query.status = 'draft';
@@ -1137,7 +1068,6 @@ module.exports.listProformats = async (req, res, next) => {
       query['client.name'] = { $regex: clientName, $options: 'i' };
     }
 
-    // EXÉCUTION avec pagination
     const options = {
       page: parseInt(page),
       limit: parseInt(limit),
@@ -1150,7 +1080,6 @@ module.exports.listProformats = async (req, res, next) => {
 
     const result = await Proformat.paginate(query, options);
 
-    // Formater pour interface POS
     const formattedProformats = result.docs.map(proformat => ({
       id: proformat._id,
       ref_code: proformat.ref_code,
@@ -1160,7 +1089,7 @@ module.exports.listProformats = async (req, res, next) => {
       },
       total: proformat.total,
       currency: proformat.currency,
-      status: proformat.display_status,
+      status: proformat.status,
       expires_at: proformat.expires_at,
       days_remaining: proformat.days_remaining,
       is_expired: proformat.is_expired,
@@ -1169,14 +1098,12 @@ module.exports.listProformats = async (req, res, next) => {
         name: proformat.store.name
       },
       items_count: proformat.item_count,
-      print_count: proformat.print_count,
       converted_order: proformat.converted_to_order ? {
         id: proformat.converted_to_order._id,
         ref_code: proformat.converted_to_order.ref_code,
         total: proformat.converted_to_order.total
       } : null,
       created_at: proformat.created_at,
-      // Actions possibles selon statut
       can_convert: proformat.status === 'draft' && !proformat.is_expired,
       can_reprint: true,
       can_renew: proformat.is_expired || proformat.status === 'expired',
@@ -1224,7 +1151,6 @@ module.exports.getProformat = async (req, res, next) => {
       });
     }
 
-    // Format détaillé pour POS
     res.status(200).json({
       success: true,
       data: {
@@ -1235,22 +1161,20 @@ module.exports.getProformat = async (req, res, next) => {
           name: proformat.store.name
         },
         client: proformat.client,
-        status: proformat.display_status,
+        status: proformat.status,
         is_expired: proformat.is_expired,
         days_remaining: proformat.days_remaining,
         expires_at: proformat.expires_at,
         validity_days: proformat.validity_days,
         
-        // Détails financiers
         subtotal: proformat.subtotal,
-        discount_global_percent: proformat.discount_global_percent,
-        discount_global_amount: proformat.discount_global_amount,
+        discount_percent: proformat.discount_percent,
+        discount_amount: proformat.discount_amount,
         tax_rate: proformat.tax_rate,
         tax_amount: proformat.tax_amount,
         total: proformat.total,
         currency: proformat.currency,
         
-        // Items détaillés
         items: proformat.items.map(item => ({
           product: {
             id: item.product,
@@ -1260,7 +1184,6 @@ module.exports.getProformat = async (req, res, next) => {
           quantity: item.quantity,
           unit_price: item.unit_price,
           total: item.total,
-          discount_percent: item.discount_percent || 0,
           ...(item.unit && { unit: item.unit }),
           ...(item.variant && { 
             variant: item.variant,
@@ -1269,15 +1192,10 @@ module.exports.getProformat = async (req, res, next) => {
         })),
         items_count: proformat.item_count,
         
-        // Métadonnées
         notes: proformat.notes,
-        conditions: proformat.conditions,
-        print_count: proformat.print_count,
-        printed_at: proformat.printed_at,
         created_at: proformat.created_at,
         updated_at: proformat.updated_at,
         
-        // Conversion
         converted_order: proformat.converted_to_order ? {
           id: proformat.converted_to_order._id,
           ref_code: proformat.converted_to_order.ref_code,
@@ -1286,7 +1204,6 @@ module.exports.getProformat = async (req, res, next) => {
         } : null,
         converted_at: proformat.converted_at,
         
-        // Actions possibles
         actions: {
           can_convert: proformat.status === 'draft' && !proformat.is_expired,
           can_reprint: true,
@@ -1315,7 +1232,6 @@ module.exports.convertProformatToOrder = async (req, res, next) => {
     const { id } = req.params;
     const cashier = res.locals.user;
 
-    // 1. RÉCUPÉRER la proformat
     const proformat = await Proformat.findOne({
       _id: id,
       cashier: cashier._id
@@ -1329,7 +1245,6 @@ module.exports.convertProformatToOrder = async (req, res, next) => {
       };
     }
 
-    // 2. VÉRIFICATIONS
     if (proformat.status !== 'draft') {
       throw {
         name: 'ValidationError',
@@ -1346,7 +1261,6 @@ module.exports.convertProformatToOrder = async (req, res, next) => {
       };
     }
 
-    // 3. VÉRIFIER les stocks
     const itemsForValidation = proformat.items.map(item => ({
       product: item.product,
       quantity: item.quantity,
@@ -1354,14 +1268,13 @@ module.exports.convertProformatToOrder = async (req, res, next) => {
       variant: item.variant
     }));
 
-    const { processedItems, total, productUpdates } = await processItems(
+    const { processedItems, productUpdates } = await processItems(
       itemsForValidation,
       proformat.store,
       session,
-      true // checkStock = true pour conversion
+      true
     );
 
-    // 4. CRÉER la commande
     const order = new Order({
       cashier: cashier._id,
       items: convertProformatItemsToOrder(proformat.items),
@@ -1374,7 +1287,6 @@ module.exports.convertProformatToOrder = async (req, res, next) => {
 
     await order.save({ session });
 
-    // 5. METTRE À JOUR les stocks
     if (productUpdates.length > 0) {
       const bulkResult = await Product.bulkWrite(
         productUpdates.map(update => ({
@@ -1389,13 +1301,10 @@ module.exports.convertProformatToOrder = async (req, res, next) => {
       }
     }
 
-    // 6. MARQUER la proformat comme convertie
-    await proformat.convertToOrder(order._id);
+    await proformat.markAsConverted(order._id);
 
-    // 7. COMMIT
     await session.commitTransaction();
 
-    // 8. RÉPONSE POS
     res.status(201).json({
       success: true,
       data: {

@@ -1,4 +1,5 @@
-// models/proformat.models.js - VERSION SIMPLE CRUD
+// models/proformat.models.js - VERSION CORRIGÉE
+
 const mongoose = require('mongoose');
 const mongoosePaginate = require('mongoose-paginate-v2');
 
@@ -55,7 +56,7 @@ const proformatSchema = new mongoose.Schema({
     }
   },
   
-  // ITEMS (même structure que Order)
+  // ITEMS
   items: [{
     product: {
       type: mongoose.Schema.Types.ObjectId,
@@ -127,7 +128,7 @@ const proformatSchema = new mongoose.Schema({
     min: 0
   },
 
-  // STATUS SIMPLE
+  // STATUS
   status: {
     type: String,
     required: true,
@@ -146,7 +147,7 @@ const proformatSchema = new mongoose.Schema({
   
   expires_at: {
     type: Date,
-    required: true,
+    required: true, // ✅ On garde required car calculé dans controller
   },
   
   // NOTES
@@ -214,41 +215,8 @@ proformatSchema.virtual('days_remaining').get(function () {
 });
 
 // ==================== MIDDLEWARE ====================
-// Calculer expires_at
-proformatSchema.pre('save', function(next) {
-  if (this.isNew || this.isModified('validity_days')) {
-    const expirationDate = new Date();
-    expirationDate.setDate(expirationDate.getDate() + this.validity_days);
-    this.expires_at = expirationDate;
-  }
-  next();
-});
-
-// Calculer les totaux (même logique que Order)
-proformatSchema.pre('save', function(next) {
-  // 1. Calculer subtotal
-  this.subtotal = this.items.reduce((sum, item) => {
-    item.total = item.unit_price * item.quantity;
-    return sum + item.total;
-  }, 0);
-  
-  // 2. Calculer remise
-  this.discount_amount = this.subtotal * (this.discount_percent / 100);
-  
-  // 3. Calculer taxe
-  const taxableAmount = this.subtotal - this.discount_amount;
-  this.tax_amount = taxableAmount * (this.tax_rate / 100);
-  
-  // 4. Total final
-  this.total = this.subtotal - this.discount_amount + this.tax_amount;
-  
-  // Arrondir
-  this.total = Math.round(this.total * 100) / 100;
-  this.tax_amount = Math.round(this.tax_amount * 100) / 100;
-  this.discount_amount = Math.round(this.discount_amount * 100) / 100;
-  
-  next();
-});
+// ✅ SUPPRIMÉ: Le middleware pre('save') qui calculait expires_at et total
+// Car ces valeurs sont maintenant calculées dans le controller AVANT création
 
 // ==================== MÉTHODES ====================
 proformatSchema.methods.markAsConverted = function(orderId) {
