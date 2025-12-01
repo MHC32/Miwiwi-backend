@@ -19,6 +19,7 @@ const cashierRoutes = require('./routes/cashier.routes.js');
 const meterReadingRoutes = require('./routes/meterReading.routes.js');
 const reportRoutes = require('./routes/report.routes');
 const proformatRoutes = require('./routes/proformat.routes.js');
+const ownerDashboardRoutes = require('./routes/ownerDashboard.routes.js');
 // 2. INITIALISATION =============================================
 const app = express();
 
@@ -54,7 +55,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'), {
 }));
 
 // 6. ROUTES =====================================================
-app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net :${process.env.PORT}`); //http://192.168.1.205
+app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net :${process.env.PORT}`); //http://192.168.1.205 
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/owner', companyRoutes);
@@ -66,6 +67,7 @@ app.use('/api/owner/', meterReadingRoutes);
 app.use('/api/owner/', reportRoutes);
 app.use('/api/cashier/', cashierRoutes);
 app.use('/api/owner/', proformatRoutes);
+app.use('/api/owner/dashboard', ownerDashboardRoutes);
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
   res.json({ 
