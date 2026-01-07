@@ -346,3 +346,70 @@ module.exports.logCreateOrderAttempt = (req, res, next) => {
 
   next();
 };
+
+const signUpSchema = Joi.object({
+  phone: Joi.string()
+    .pattern(/^[0-9]{10,15}$/)
+    .required()
+    .messages({
+      'string.pattern.base': 'Le téléphone doit contenir 10 à 15 chiffres',
+      'any.required': 'Le téléphone est requis'
+    }),
+  
+  first_name: Joi.string()
+    .min(2)
+    .max(50)
+    .required()
+    .messages({
+      'string.min': 'Le prénom doit contenir au moins 2 caractères',
+      'string.max': 'Le prénom ne doit pas dépasser 50 caractères',
+      'any.required': 'Le prénom est requis'
+    }),
+  
+  last_name: Joi.string()
+    .min(2)
+    .max(50)
+    .required()
+    .messages({
+      'string.min': 'Le nom doit contenir au moins 2 caractères',
+      'string.max': 'Le nom ne doit pas dépasser 50 caractères',
+      'any.required': 'Le nom est requis'
+    }),
+  
+  password: Joi.string()
+    .min(6)
+    .max(128)
+    .required()
+    .messages({
+      'string.min': 'Le mot de passe doit contenir au moins 6 caractères',
+      'string.max': 'Le mot de passe ne doit pas dépasser 128 caractères',
+      'any.required': 'Le mot de passe est requis'
+    }),
+  
+  role: Joi.string()
+    .valid('owner', 'supervisor', 'cashier', 'customer', 'admin')
+    .default('owner')
+});
+
+exports.validateSignUp = (req, res, next) => {
+  const { error, value } = signUpSchema.validate(req.body, {
+    abortEarly: false,
+    stripUnknown: true
+  });
+
+  if (error) {
+    const errors = error.details.map(detail => ({
+      field: detail.path[0],
+      message: detail.message
+    }));
+
+    return res.status(400).json({
+      success: false,
+      message: 'Validation échouée',
+      errors
+    });
+  }
+
+  req.validatedData = value;
+  next();
+};

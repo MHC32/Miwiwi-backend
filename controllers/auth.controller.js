@@ -6,34 +6,50 @@ const bcrypt = require('bcrypt');
 const { formatImageUrl } = require('../utils/fileUtils');
 
 
-// Définition des durées
-const MAX_AGE_3_DAYS_MS = 3 * 24 * 60 * 60 * 1000; // Pour les cookies
-const MAX_AGE_8_HOURS_MS = 8 * 60 * 60 * 1000; // Pour les cookies cashier
-const maxAge = 3 * 24 * 60 * 60 * 1000;
+// Durées en millisecondes pour les cookies
+const COOKIE_MAX_AGE_3_DAYS = 3 * 24 * 60 * 60 * 1000;
+const COOKIE_MAX_AGE_8_HOURS = 8 * 60 * 60 * 1000;
+const COOKIE_MAX_AGE_5_MIN = 5 * 60 * 1000;
 
+// Fonction de création de token JWT
 const createToken = (id, expiresIn = '3d') => {
   return jwt.sign(
     { id },
     process.env.TOKEN_SECRET,
-    { expiresIn } // ✅ '3d', '8h', '30m', etc.
+    { expiresIn } // '3d', '8h', '5m', '30d', etc.
   );
 };
 
 
-
+// Inscription
 module.exports.signUp = async (req, res) => {
-  console.log(req.body);
   const { phone, first_name, last_name, password, role } = req.body;
 
-  try {
-    const user = userModel.create({ phone, first_name, last_name, password, role })
-    res.status(201).json({ user: user._id })
-  } catch (error) {
-    res.status(400).send(error)
+  // Validation des champs obligatoires
+  if (!phone || !first_name || !last_name || !password) {
+    return res.status(400).json({
+      success: false,
+      message: 'Tous les champs sont requis'
+    });
   }
-}
 
+  try {
+    const user = await userModel.create({ phone, first_name, last_name, password, role });
+    res.status(201).json({
+      success: true,
+      userId: user._id
+    });
+  } catch (error) {
+    console.error('Erreur inscription:', error);
+    res.status(400).json({
+      success: false,
+      message: 'Erreur lors de l\'inscription',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
 
+// Connexion standard
 module.exports.signIn = async (req, res) => {
   const { phone, password } = req.body;
 
@@ -45,12 +61,12 @@ module.exports.signIn = async (req, res) => {
     }
 
     const user = await userModel.login(phone, password);
-    const token = createToken(user._id, '3d'); // ✅ '3d' au lieu de maxAge
+    const token = createToken(user._id, '3d');
 
     res.cookie('jwt', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: MAX_AGE_3_DAYS_MS, // ✅ 3 jours en ms pour cookie
+      maxAge: COOKIE_MAX_AGE_3_DAYS,
       sameSite: 'strict'
     });
 
@@ -66,8 +82,7 @@ module.exports.signIn = async (req, res) => {
   }
 };
 
-
-// Dans auth.controller.js
+// Déconnexion
 module.exports.logout = (req, res) => {
   try {
     if (!req.cookies.jwt) {
@@ -78,17 +93,15 @@ module.exports.logout = (req, res) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      path: '/' // Important pour effacer le cookie sur tout le domaine
+      path: '/'
     });
 
-    // Optionnel : Log l'action
     console.log(`Utilisateur déconnecté : ${res.locals.user?._id || 'guest'}`);
 
     res.status(200).json({
       success: true,
       message: 'Déconnexion réussie'
     });
-
   } catch (error) {
     console.error('Erreur logout:', error);
     res.status(500).json({
@@ -98,7 +111,7 @@ module.exports.logout = (req, res) => {
   }
 };
 
-
+// Connexion owner/supervisor
 module.exports.loginOwner = async (req, res) => {
   const { phone, password } = req.body;
 
@@ -112,12 +125,12 @@ module.exports.loginOwner = async (req, res) => {
       });
     }
 
-    const token = createToken(user._id, '3d'); // ✅
+    const token = createToken(user._id, '3d');
 
     res.cookie('jwt', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: MAX_AGE_3_DAYS_MS // ✅
+      maxAge: COOKIE_MAX_AGE_3_DAYS
     });
 
     res.status(200).json({
@@ -133,7 +146,7 @@ module.exports.loginOwner = async (req, res) => {
   }
 };
 
-
+// Récupération des données owner
 module.exports.getOwnerData = async (req, res) => {
   try {
     const user = res.locals.user;
@@ -187,7 +200,6 @@ module.exports.getOwnerData = async (req, res) => {
       stores: ownerData.stores || [],
       supervisedStore: ownerData.supervisedStore || null
     });
-
   } catch (error) {
     res.status(500).json({
       error: error.message,
@@ -196,13 +208,11 @@ module.exports.getOwnerData = async (req, res) => {
   }
 };
 
-
-// Étape 1 : Authentification initiale
+// Étape 1 : Authentification initiale caissier
 module.exports.loginCashierStep1 = async (req, res) => {
   const { phone, password } = req.body;
 
   try {
-    // 1. Validation des entrées
     if (!phone || !password) {
       return res.status(400).json({
         success: false,
@@ -211,7 +221,6 @@ module.exports.loginCashierStep1 = async (req, res) => {
       });
     }
 
-    // 2. Recherche de l'utilisateur
     const user = await userModel.findOne({ phone, role: 'cashier' });
     if (!user || !user.is_active) {
       return res.status(401).json({
@@ -221,7 +230,6 @@ module.exports.loginCashierStep1 = async (req, res) => {
       });
     }
 
-    // 4. Récupération des magasins accessibles
     const accessibleStores = await storeModel.find({
       $and: [
         { is_active: true },
@@ -244,13 +252,12 @@ module.exports.loginCashierStep1 = async (req, res) => {
       });
     }
 
-    // 5. Préparation de la réponse
     const response = {
       success: true,
       tempAuthToken: jwt.sign(
         { userId: user._id, step: 'partial' },
         process.env.TOKEN_SECRET,
-        { expiresIn: '5m' } // Token temporaire valide 5 minutes
+        { expiresIn: '5m' }
       ),
       user: {
         id: user._id,
@@ -265,7 +272,6 @@ module.exports.loginCashierStep1 = async (req, res) => {
     };
 
     res.status(200).json(response);
-
   } catch (error) {
     console.error('Login Step 1 Error:', error);
     res.status(500).json({
@@ -276,12 +282,11 @@ module.exports.loginCashierStep1 = async (req, res) => {
   }
 };
 
-// Étape 2 : Sélection du magasin et génération du JWT final
+// Étape 2 : Sélection du magasin et génération du JWT final caissier
 module.exports.loginCashierStep2 = async (req, res) => {
   const { tempAuthToken, storeId } = req.body;
 
   try {
-    // 1. Vérification du token temporaire
     const decoded = jwt.verify(tempAuthToken, process.env.TOKEN_SECRET);
     if (decoded.step !== 'partial') {
       return res.status(401).json({
@@ -293,7 +298,6 @@ module.exports.loginCashierStep2 = async (req, res) => {
 
     const userId = decoded.userId;
 
-    // 2. Récupération complète des données
     const user = await userModel.findById(userId)
       .select('first_name last_name phone pin_code')
       .lean();
@@ -306,7 +310,6 @@ module.exports.loginCashierStep2 = async (req, res) => {
       });
     }
 
-    // 3. Vérification des permissions sur le magasin
     const store = await storeModel.findOne({
       _id: storeId,
       is_active: true,
@@ -325,7 +328,6 @@ module.exports.loginCashierStep2 = async (req, res) => {
       });
     }
 
-    // 4. Génération du token final
     const authToken = jwt.sign(
       {
         id: userId,
@@ -338,16 +340,14 @@ module.exports.loginCashierStep2 = async (req, res) => {
       { expiresIn: '8h' }
     );
 
-    // 5. Définir le cookie HTTP-Only
     res.cookie('jwt', authToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Secure en production
+      secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 8 * 60 * 60 * 1000, // 8 heures en ms
+      maxAge: COOKIE_MAX_AGE_8_HOURS,
       path: '/'
     });
 
-    // 5. Réponse finale avec toutes les infos
     res.status(200).json({
       success: true,
       authToken,
@@ -371,7 +371,6 @@ module.exports.loginCashierStep2 = async (req, res) => {
         }
       }
     });
-
   } catch (error) {
     console.error('Login Step 2 Error:', error);
     if (error.name === 'TokenExpiredError') {
@@ -389,10 +388,9 @@ module.exports.loginCashierStep2 = async (req, res) => {
   }
 };
 
+// Déconnexion caissier
 module.exports.logoutCashier = async (req, res) => {
   try {
-
-
     res.clearCookie('jwt', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -400,13 +398,11 @@ module.exports.logoutCashier = async (req, res) => {
       path: '/'
     });
 
-    // Réponse cohérente avec votre style
     res.status(200).json({
       success: true,
       code: "LOGOUT_SUCCESS",
       message: "Déconnexion réussie"
     });
-
   } catch (error) {
     console.error('Logout error:', error);
     res.status(500).json({
