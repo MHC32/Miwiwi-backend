@@ -36,6 +36,7 @@ app.use(cookieParser());
 
 // 4. CONNEXION BASE DE DONNÉES ==================================
 require('./config/db');
+connectDB(); 
 
 // 5. MIDDLEWARE D'AUTHENTIFICATION ==============================
 app.use((req, res, next) => {
@@ -104,6 +105,6 @@ app.listen(PORT, () => {
   console.log(`\n--- Serveur démarré ---`);
   console.log(`Port: ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`URL Client: ${process.env.CLIENT_URL || 'http://localhost:3000'}\n`);
+  console.log(`URL Client: ${process.env.CLIENT_URL}`);
+  console.log(`URL API: ${process.env.BASE_URL || `http://localhost:${PORT}`}\n`);
 });
-
