@@ -35,7 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // 4. CONNEXION BASE DE DONNÉES ==================================
-require('./config/db');
+const connectDB = require('./config/db');
 connectDB(); 
 
 // 5. MIDDLEWARE D'AUTHENTIFICATION ==============================
