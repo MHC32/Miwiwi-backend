@@ -7,6 +7,7 @@ const cookieParser = require('cookie-parser');
 const morgan = require('morgan');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const { checkUser, requireAuth } = require('./middleware/auth.middleware');
 const userRoutes = require('./routes/user.routes');
 const adminRoutes = require('./routes/admin.routes');
@@ -20,26 +21,40 @@ const meterReadingRoutes = require('./routes/meterReading.routes.js');
 const reportRoutes = require('./routes/report.routes');
 const proformatRoutes = require('./routes/proformat.routes.js');
 const ownerDashboardRoutes = require('./routes/ownerDashboard.routes.js');
+
 // 2. INITIALISATION =============================================
 const app = express();
 
-// 3. MIDDLEWARES DE BASE ========================================
+// 3. CRÉATION DES DOSSIERS UPLOAD AU DÉMARRAGE ===================
+const uploadDirs = [
+  'public/uploads/stores',
+  'public/uploads/products',
+  'public/uploads/meter-readings'
+];
+
+uploadDirs.forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`✅ Dossier créé: ${dir}`);
+  }
+});
+
+// 4. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'https://kesbiz.net' , //'http://localhost:3000'
+  origin: process.env.CLIENT_URL || 'https://kesbiz.net',
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(require('./middleware/cookieLogger'));
 
-// 4. CONNEXION BASE DE DONNÉES ==================================
+// 5. CONNEXION BASE DE DONNÉES ==================================
 const connectDB = require('./config/db');
-connectDB(); 
+connectDB();
 
-// 5. MIDDLEWARE D'AUTHENTIFICATION ==============================
+// 6. MIDDLEWARE D'AUTHENTIFICATION ==============================
 app.use((req, res, next) => {
   // Applique checkUser sur toutes les routes API et /jwtid
   if (req.path.startsWith('/api') || req.path === '/jwtid') {
@@ -48,6 +63,7 @@ app.use((req, res, next) => {
   next();
 });
 
+// 7. SERVEUR DE FICHIERS STATIQUES ==============================
 app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.jpg') || filePath.endsWith('.png') || filePath.endsWith('.webp')) {
@@ -56,8 +72,10 @@ app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'), {
   }
 }));
 
-// 6. ROUTES =====================================================
-app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net :${process.env.PORT}`); //http://192.168.1.205 
+// 8. ROUTES =====================================================
+// ✅ Correction de l'espace dans l'URL
+app.set('baseUrl', process.env.BASE_URL || `https://kesbiz.net:${process.env.PORT}`);
+
 app.use('/api/user', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/owner', companyRoutes);
@@ -70,9 +88,11 @@ app.use('/api/owner/', reportRoutes);
 app.use('/api/cashier/', cashierRoutes);
 app.use('/api/owner/', proformatRoutes);
 app.use('/api/owner/dashboard', ownerDashboardRoutes);
+
+// 9. ROUTES DE TEST =============================================
 // Route de test d'authentification
 app.get('/api/protected', requireAuth, (req, res) => {
-  res.json({ 
+  res.json({
     message: 'Route protégée',
     user: {
       id: res.locals.user._id,
@@ -86,26 +106,26 @@ app.get('/jwtid', requireAuth, (req, res) => {
   res.status(200).json({ userId: res.locals.user._id });
 });
 
-// 7. GESTION DES ERREURS ========================================
+// 10. GESTION DES ERREURS =======================================
 app.use((err, req, res, next) => {
   console.error('Erreur:', err.stack);
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Erreur serveur',
     message: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
-// 8. ROUTE 404 =================================================
+// 11. ROUTE 404 =================================================
 app.use((req, res) => {
   res.status(404).json({ message: 'Endpoint non trouvé' });
 });
 
-// 9. DÉMARRAGE SERVEUR =========================================
+// 12. DÉMARRAGE SERVEUR =========================================
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`\n--- Serveur démarré ---`);
   console.log(`Port: ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`URL Client: ${process.env.CLIENT_URL}`);
+  console.log(`URL Client: ${process.env.CLIENT_URL || 'http://localhost:3000'}`);
   console.log(`URL API: ${process.env.BASE_URL || `http://localhost:${PORT}`}\n`);
 });
