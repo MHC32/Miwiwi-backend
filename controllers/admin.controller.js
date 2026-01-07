@@ -8,7 +8,6 @@ const Product = require('../models/products.models.js');
 const Category = require('../models/category.models.js');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
-const { upload: productUpload, checkUploadDir } = require('../middleware/productUpload.js');
 const path = require('path');
 const fs = require('fs');
 
