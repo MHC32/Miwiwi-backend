@@ -6,14 +6,16 @@ const bcrypt = require('bcrypt');
 const { formatImageUrl } = require('../utils/fileUtils');
 
 
-
+// Définition des durées
+const MAX_AGE_3_DAYS_MS = 3 * 24 * 60 * 60 * 1000; // Pour les cookies
+const MAX_AGE_8_HOURS_MS = 8 * 60 * 60 * 1000; // Pour les cookies cashier
 const maxAge = 3 * 24 * 60 * 60 * 1000;
 
-const createToken = (id) => {
+const createToken = (id, expiresIn = '3d') => {
   return jwt.sign(
     { id },
     process.env.TOKEN_SECRET,
-    { expiresIn: maxAge }
+    { expiresIn } // ✅ '3d', '8h', '30m', etc.
   );
 };
 
@@ -43,20 +45,19 @@ module.exports.signIn = async (req, res) => {
     }
 
     const user = await userModel.login(phone, password);
-    const token = createToken(user._id);
+    const token = createToken(user._id, '3d'); // ✅ '3d' au lieu de maxAge
 
     res.cookie('jwt', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Important pour HTTPS
-      maxAge,
-      sameSite: 'strict' // Protection contre CSRF
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: MAX_AGE_3_DAYS_MS, // ✅ 3 jours en ms pour cookie
+      sameSite: 'strict'
     });
 
     res.status(200).json({
       userId: user._id,
-      role: user.role // Si vous voulez utiliser les rôles côté client
+      role: user.role
     });
-
   } catch (error) {
     console.error('Erreur de connexion:', error.message);
     res.status(401).json({
@@ -111,12 +112,12 @@ module.exports.loginOwner = async (req, res) => {
       });
     }
 
-    const token = createToken(user._id);
+    const token = createToken(user._id, '3d'); // ✅
 
     res.cookie('jwt', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 3 * 24 * 60 * 60 * 1000 // 3 jours
+      maxAge: MAX_AGE_3_DAYS_MS // ✅
     });
 
     res.status(200).json({
@@ -124,7 +125,6 @@ module.exports.loginOwner = async (req, res) => {
       role: user.role,
       firstName: user.first_name
     });
-
   } catch (error) {
     res.status(401).json({
       error: error.message,
