@@ -2,7 +2,6 @@ const router = require('express').Router();
 const { requireAuth, isOwner } = require('../middleware/auth.middleware');
 const productController = require('../controllers/product.controller');
 const { productUpload } = require('../utils/uploadUtils'); 
-
 // Routes pour les produits
 router.post('/products', requireAuth, isOwner, productUpload.checkUploadDir, productUpload.upload.array('images', 5), productController.createProduct);
 router.get('/products', requireAuth, isOwner, productController.listOwnerProducts);

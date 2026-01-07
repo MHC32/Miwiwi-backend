@@ -5,7 +5,7 @@ const Store = require('../models/stores.models');
 const Category = require('../models/category.models');
 const path = require('path');
 const fs = require('fs');
-const { upload: productUpload, checkUploadDir } = require('../middleware/productUpload.js');
+
 
 /**
  * @description Crée un nouveau produit pour un magasin du owner
