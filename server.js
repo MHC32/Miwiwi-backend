@@ -41,8 +41,26 @@ uploadDirs.forEach(dir => {
 
 // 4. MIDDLEWARES DE BASE ========================================
 app.use(morgan('dev')); // Logger des requêtes
+
+// Configuration CORS avec support multiple origines (www et non-www)
+const allowedOrigins = [
+  process.env.CLIENT_URL || 'https://kesbiz.net',
+  'https://www.kesbiz.net',
+  'https://kesbiz.net'
+];
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'https://kesbiz.net',
+  origin: function (origin, callback) {
+    // Permettre les requêtes sans origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`⚠️ CORS bloqué pour origine: ${origin}`);
+      callback(new Error('Non autorisé par CORS'));
+    }
+  },
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));

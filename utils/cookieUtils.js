@@ -14,7 +14,7 @@ const getCookieOptions = (maxAge = null) => {
   const options = {
     httpOnly: true,
     secure: isProduction && !isLocalhost, // En local, secure=false
-    sameSite: isProduction ? 'strict' : 'lax', // En dev, lax pour compatibilité
+    sameSite: 'lax', // 'lax' pour compatibilité mobile (Safari iOS problématique avec 'strict')
     path: '/', // Toujours définir le path
   };
 

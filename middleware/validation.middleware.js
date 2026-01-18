@@ -20,7 +20,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
           'string.length': 'L\'ID produit doit faire exactement 24 caractères',
           'any.required': 'L\'ID produit est requis'
         }),
-      
+
       // Pour les produits standards
       quantity: Joi.number()
         .positive()
@@ -34,7 +34,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
           'number.positive': 'La quantité doit être positive',
           'number.precision': 'Maximum 3 décimales pour la quantité'
         }),
-      
+
       // Pour les produits carburant
       amount: Joi.number()
         .positive()
@@ -48,7 +48,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
           'number.positive': 'Le montant carburant doit être positif',
           'number.precision': 'Maximum 2 décimales pour le montant'
         }),
-      
+
       // Variant optionnel
       variant: Joi.string()
         .hex()
@@ -58,12 +58,12 @@ module.exports.validateCreateOrder = (req, res, next) => {
           'string.hex': 'L\'ID variant doit être un ObjectId valide',
           'string.length': 'L\'ID variant doit faire exactement 24 caractères'
         }),
-      
+
       // Type de produit (peut être fourni par le client pour validation)
       type: Joi.string()
         .valid('quantity', 'weight', 'volume', 'fuel')
         .optional(),
-      
+
       // Données supplémentaires optionnelles
       notes: Joi.string().max(500).optional()
     });
@@ -78,7 +78,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
           'string.length': 'L\'ID magasin doit faire exactement 24 caractères',
           'any.required': 'L\'ID magasin est requis'
         }),
-      
+
       items: Joi.array()
         .items(itemSchema)
         .min(1)
@@ -89,7 +89,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
           'array.max': 'Maximum 100 produits par commande',
           'any.required': 'La liste des produits est requise'
         }),
-      
+
       // Métadonnées optionnelles
       notes: Joi.string().max(1000).optional(),
       payment_method: Joi.string()
@@ -131,7 +131,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
           message: 'Le montant est requis pour les produits carburant'
         });
       }
-      
+
       if (item.type !== 'fuel' && !item.quantity) {
         validationErrors.push({
           field: `items[${index}].quantity`,
@@ -166,7 +166,7 @@ module.exports.validateCreateOrder = (req, res, next) => {
 
     // Ajouter les données validées à la requête
     req.validatedData = value;
-    
+
     next();
 
   } catch (error) {
@@ -193,8 +193,8 @@ module.exports.sanitizeCreateOrder = (req, res, next) => {
     const sanitizeString = (str) => {
       if (typeof str !== 'string') return str;
       return str.trim()
-                .replace(/[<>]/g, '') // Supprimer < et >
-                .substring(0, 1000); // Limiter la longueur
+        .replace(/[<>]/g, '') // Supprimer < et >
+        .substring(0, 1000); // Limiter la longueur
     };
 
     // Sanitisation récursive
@@ -202,7 +202,7 @@ module.exports.sanitizeCreateOrder = (req, res, next) => {
       if (Array.isArray(obj)) {
         return obj.map(item => sanitizeObject(item));
       }
-      
+
       if (obj && typeof obj === 'object') {
         const sanitized = {};
         for (const [key, value] of Object.entries(obj)) {
@@ -210,11 +210,11 @@ module.exports.sanitizeCreateOrder = (req, res, next) => {
         }
         return sanitized;
       }
-      
+
       if (typeof obj === 'string') {
         return sanitizeString(obj);
       }
-      
+
       return obj;
     };
 
@@ -327,9 +327,9 @@ module.exports.logCreateOrderAttempt = (req, res, next) => {
 
   // Intercepter la réponse pour logger le résultat
   const originalSend = res.json;
-  res.json = function(data) {
+  res.json = function (data) {
     const duration = Date.now() - startTime;
-    
+
     console.log(`CREATE_ORDER_RESULT`, {
       cashier_id: cashier?._id,
       store_id: storeId,
@@ -355,7 +355,7 @@ const signUpSchema = Joi.object({
       'string.pattern.base': 'Le téléphone doit contenir 10 à 15 chiffres',
       'any.required': 'Le téléphone est requis'
     }),
-  
+
   first_name: Joi.string()
     .min(2)
     .max(50)
@@ -365,7 +365,7 @@ const signUpSchema = Joi.object({
       'string.max': 'Le prénom ne doit pas dépasser 50 caractères',
       'any.required': 'Le prénom est requis'
     }),
-  
+
   last_name: Joi.string()
     .min(2)
     .max(50)
@@ -375,7 +375,7 @@ const signUpSchema = Joi.object({
       'string.max': 'Le nom ne doit pas dépasser 50 caractères',
       'any.required': 'Le nom est requis'
     }),
-  
+
   password: Joi.string()
     .min(6)
     .max(128)
@@ -385,7 +385,7 @@ const signUpSchema = Joi.object({
       'string.max': 'Le mot de passe ne doit pas dépasser 128 caractères',
       'any.required': 'Le mot de passe est requis'
     }),
-  
+
   role: Joi.string()
     .valid('owner', 'supervisor', 'cashier', 'customer', 'admin')
     .default('owner')
@@ -393,6 +393,49 @@ const signUpSchema = Joi.object({
 
 exports.validateSignUp = (req, res, next) => {
   const { error, value } = signUpSchema.validate(req.body, {
+    abortEarly: false,
+    stripUnknown: true
+  });
+
+  if (error) {
+    const errors = error.details.map(detail => ({
+      field: detail.path[0],
+      message: detail.message
+    }));
+
+    return res.status(400).json({
+      success: false,
+      message: 'Validation échouée',
+      errors
+    });
+  }
+
+  req.validatedData = value;
+  next();
+};
+
+
+const loginSchema = Joi.object({
+  phone: Joi.string()
+    .pattern(/^[0-9]{8,15}$/) // ✅ 8-15 chiffres au lieu de 10-15
+    .required()
+    .messages({
+      'string.pattern.base': 'Le téléphone doit contenir 8 à 15 chiffres',
+      'any.required': 'Le téléphone est requis'
+    }),
+  password: Joi.string()
+    .min(6)
+    .max(128)
+    .required()
+    .messages({
+      'string.min': 'Le mot de passe doit contenir au moins 6 caractères',
+      'string.max': 'Le mot de passe ne doit pas dépasser 128 caractères',
+      'any.required': 'Le mot de passe est requis'
+    })
+});
+
+exports.validateLogin = (req, res, next) => {
+  const { error, value } = loginSchema.validate(req.body, {
     abortEarly: false,
     stripUnknown: true
   });

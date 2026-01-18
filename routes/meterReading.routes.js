@@ -4,7 +4,8 @@ const { requireAuth,  isSupervisor, isOwner } = require('../middleware/auth.midd
 const meterReadingController = require('../controllers/meterReading.controller');
 
 
-router.get('/stores/:storeId/readings', isOwner, requireAuth, meterReadingController.getStoreReadings);
-router.patch('/readings/:id/verify', isOwner, requireAuth, isSupervisor, meterReadingController.verifyReading);
+router.get('/stores/:storeId/readings', requireAuth, isOwner, meterReadingController.getStoreReadings);
+router.patch('/readings/:id/verify', requireAuth, isSupervisor, meterReadingController.verifyReading);
+
 
 module.exports = router;
