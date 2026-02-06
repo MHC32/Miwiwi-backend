@@ -70,15 +70,14 @@ module.exports.createEmployeeForStore = async (req, res) => {
             });
         }
 
-        const salt = await bcrypt.genSalt();
-        const hashedPassword = await bcrypt.hash(password, salt);
-
+        // ✅ FIX: Ne pas hasher ici, le hook pre('save') du modèle User le fera automatiquement
+        // Cela évite le double hashage qui rendait le mot de passe invalide
         const newEmployee = await User.create([{
             phone,
             first_name,
             last_name,
             email,
-            password: hashedPassword,
+            password, // ✅ Passer le mot de passe en clair, le hook le hashera
             role,
             pin_code,
             stores: storeIds || [],
@@ -233,10 +232,10 @@ module.exports.updateEmployee = async (req, res) => {
         const updateData = { ...updates };
         delete updateData._id; // Empêche la modification de l'ID
 
-        // Hash du mot de passe si fourni
+        // ✅ FIX: Ne pas hasher ici, assignez le mot de passe directement
+        // Le hook pre('save') du modèle User le hashera automatiquement
         if (updates.password) {
-            const salt = await bcrypt.genSalt();
-            updateData.password = await bcrypt.hash(updates.password, salt);
+            updateData.password = updates.password; // Le hook le hashera
         }
 
         // ======================

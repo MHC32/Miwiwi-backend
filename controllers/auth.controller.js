@@ -294,8 +294,12 @@ module.exports.loginCashierStep1 = async (req, res) => {
   const { phone, password } = req.body;
 
   try {
+    console.log('🔐 [loginCashierStep1] ==================== DÉBUT ====================');
+    console.log('📤 [loginCashierStep1] Requête reçue:', { phone, password: '***' });
+
     // 1. Validation des entrées
     if (!phone || !password) {
+      console.log('❌ [loginCashierStep1] Credentials manquants');
       return res.status(400).json({
         success: false,
         code: "MISSING_CREDENTIALS",
@@ -304,8 +308,30 @@ module.exports.loginCashierStep1 = async (req, res) => {
     }
 
     // 2. Recherche de l'utilisateur
+    console.log('🔍 [loginCashierStep1] Recherche utilisateur avec phone:', phone, 'et role: cashier');
     const user = await userModel.findOne({ phone, role: 'cashier' });
-    if (!user || !user.is_active) {
+
+    console.log('📦 [loginCashierStep1] Utilisateur trouvé:', {
+      found: !!user,
+      userId: user?._id,
+      phone: user?.phone,
+      role: user?.role,
+      is_active: user?.is_active,
+      first_name: user?.first_name,
+      last_name: user?.last_name
+    });
+
+    if (!user) {
+      console.log('❌ [loginCashierStep1] Utilisateur NON TROUVÉ avec ce phone et role cashier');
+      return res.status(401).json({
+        success: false,
+        code: "UNAUTHORIZED",
+        message: "Identifiants invalides ou compte désactivé"
+      });
+    }
+
+    if (!user.is_active) {
+      console.log('❌ [loginCashierStep1] Utilisateur trouvé mais INACTIF');
       return res.status(401).json({
         success: false,
         code: "UNAUTHORIZED",
@@ -314,17 +340,27 @@ module.exports.loginCashierStep1 = async (req, res) => {
     }
 
     // 3. Vérification du mot de passe
+    console.log('🔑 [loginCashierStep1] Vérification du mot de passe...');
     const isPasswordValid = await userModel.login(phone, password)
-      .then(() => true)
-      .catch(() => false);
+      .then(() => {
+        console.log('✅ [loginCashierStep1] Mot de passe VALIDE');
+        return true;
+      })
+      .catch((error) => {
+        console.log('❌ [loginCashierStep1] Mot de passe INVALIDE:', error.message);
+        return false;
+      });
 
     if (!isPasswordValid) {
+      console.log('❌ [loginCashierStep1] Échec de la vérification du mot de passe');
       return res.status(401).json({
         success: false,
         code: "UNAUTHORIZED",
         message: "Identifiants invalides"
       });
     }
+
+    console.log('✅ [loginCashierStep1] Authentification réussie, recherche des magasins...');
 
     // 4. Récupération des magasins accessibles
     const accessibleStores = await storeModel.find({
